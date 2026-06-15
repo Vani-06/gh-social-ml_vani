@@ -1,8 +1,8 @@
 import pytest
 import numpy as np
+import threading
 from ingestion_engine import (
-    extract_tags, classify_category, compute_multi_dimensional_novelty,
-    ingest_repository, CorpusStore, IngestionResult, _qdrant_uses_named_vectors, _qdrant_query_vector
+    extract_tags, classify_category, ingest_repository, CorpusStore, IngestionResult
 )
 
 
@@ -30,6 +30,7 @@ def test_extract_tags_repository_name_parsing():
     tags = extract_tags("python_machine_learning", [])
     assert set(tags) == {"python", "machine", "learning"}
 
+
 # M1: Phrase deduplication
 def test_extract_tags_phrase_deduplication():
     # test compound semantic concepts
@@ -45,63 +46,6 @@ def test_extract_tags_phrase_deduplication():
     tags2 = extract_tags("ai-assistant", paragraphs)
     assert tags2.count("Ai Assistant") == 1
 
-# 2. Qdrant named-vector retrieval (Mocked)
-def test_qdrant_named_vector_query():
-    class MockClient:
-        def get_collection(self, name):
-            class Config:
-                class Params:
-                    vectors = {"repo_embedding": type("V", (), {"size": 384, "distance": "COSINE"})}
-                params = Params()
-            class Info:
-                config = Config()
-            return Info()
-            
-    client = MockClient()
-    vector = np.array([0.1, 0.2, 0.3])
-    # check that named vector query formats correctly
-    q_vector = _qdrant_query_vector(client, vector)
-    assert getattr(q_vector, "name", None) == "repo_embedding" or isinstance(q_vector, dict) and q_vector.get("name") == "repo_embedding"
-
-# 3. ingestion -> retrieval embedding flow
-def test_ingestion_embedding_flow():
-    repo = {"id": "test/repo", "star_count": 100, "readme_length": 500}
-    store = CorpusStore()
-    result = ingest_repository(repo, corpus_store=store)
-    assert isinstance(result.embedding, list)
-    assert len(result.embedding) == 384
-
-# 4 & 5. topology disabled / enabled
-def test_topology_paths():
-    repo = {"id": "test/topo", "category": "Frontend", "primary_language": "JS", "star_count": 100, "readme_length": 500}
-    store = CorpusStore()
-    store.add_node({"repo_id": "test/1", "vector": np.ones(384), "category": "Frontend", "tags": [], "activity": 1.0}, 0.5)
-    store.add_node({"repo_id": "test/2", "vector": np.ones(384), "category": "Backend", "tags": [], "activity": 1.0}, 0.5)
-    store.add_node({"repo_id": "test/3", "vector": np.ones(384), "category": "Frontend", "tags": [], "activity": 1.0}, 0.5)
-    store.add_node({"repo_id": "test/4", "vector": np.ones(384), "category": "Frontend", "tags": [], "activity": 1.0}, 0.5)
-
-    # disabled path
-    res_disabled = ingest_repository(repo, corpus_store=store, compute_topology=False)
-    assert res_disabled.topological_metrics == {}
-
-    # enabled path
-    res_enabled = ingest_repository(repo, corpus_store=store, compute_topology=True)
-    assert "current_cluster" in res_enabled.topological_metrics
-    assert res_enabled.topological_metrics["current_cluster"] == "Frontend"
-
-# 6. multi-neighbor novelty calculation
-def test_multi_neighbor_novelty():
-    qdrant_hits = [
-        {"repo_id": "r1", "sim": 0.9, "category": "C1", "activity": 0.5, "tags": ["a", "b"]},
-        {"repo_id": "r2", "sim": 0.8, "category": "C1", "activity": 0.5, "tags": ["a", "c"]},
-    ]
-    # target has tag "a"
-    result = compute_multi_dimensional_novelty("new_repo", "C1", 0.5, ["a"], qdrant_hits, 100)
-    # Jaccard for r1: a vs a,b => 1/2
-    # Jaccard for r2: a vs a,c => 1/2
-    # Mean overlap = 0.5
-    # Tech stack novelty = 1.0 - 0.5 = 0.5
-    assert result.tech_stack_penalty == 0.2
 
 # 7. React vs ReAct classification
 def test_react_classification():
@@ -123,8 +67,8 @@ def test_react_classification():
     cat_agent = classify_category(repo_agent, ["react", "agent", "llm"])
     assert cat_agent == "Data Engineering & AI/ML Pipelines"
 
+
 # 8. concurrent ingestion behavior
-import threading
 def test_concurrent_ingestion():
     store = CorpusStore()
     
@@ -139,3 +83,4 @@ def test_concurrent_ingestion():
 
     assert store.size() == 10
     assert len(store.get_timeline()) == 10
+

@@ -3,11 +3,8 @@ from typing import Optional
 
 from .features import extract_tags, score_documentation, activity_score, trend_velocity, build_structured_summary, score_code_health
 from .classification import classify_category
-from .embeddings import generate_hybrid_embedding
-from .vector_store import _resolve_qdrant_client, _verify_qdrant_collection, _qdrant_count_points, _query_qdrant_neighbors, _query_internal_neighbors, _index_qdrant_point, _qdrant_collection_diagnostics, _QDRANT_OK
-from .novelty import compute_multi_dimensional_novelty, calculate_quadrant, NoveltyMatrix
 from .corpus import CorpusStore, dynamic_cluster_discovery
-from .result import IngestionResult
+from .result import IngestionResult, NoveltyMatrix
 from .config import GATE_APPROVAL_THRESHOLD, MIN_STARS_PREFILTER, MIN_README_PREFILTER
 
 def _rejected_prefilter_result(repo_id: str, reason: str, repo: dict) -> IngestionResult:

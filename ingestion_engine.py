@@ -5,7 +5,7 @@ from ingestion import *
 
 # For backwards compatibility with tests and direct module access:
 import ingestion.config as config
-from ingestion.novelty import NoveltyMatrix
+from ingestion.result import NoveltyMatrix
 from ingestion.features import DocResult
 
 if __name__ == "__main__":

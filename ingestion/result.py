@@ -1,7 +1,17 @@
 from dataclasses import dataclass
 from typing import Optional
 from .config import NOVELTY_THRESHOLD
-from .novelty import NoveltyMatrix
+
+@dataclass
+class NoveltyMatrix:
+    final: float
+    semantic_penalty: float
+    category_penalty: float 
+    tech_stack_penalty: float
+    activity_penalty: float
+    top_k: list[dict]
+    anomaly_tag: str
+    explanation: str
 
 @dataclass
 class IngestionResult:

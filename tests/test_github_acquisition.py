@@ -36,23 +36,19 @@ The architecture includes a scheduler, plugin runtime, event router, and integra
     assert "screenshot" not in document.clean_text.lower()
 
 
-def test_ingestion_engine_uses_internal_neighbors_when_qdrant_unavailable() -> None:
-    original_qdrant_ok = ingestion_engine._QDRANT_OK
-    ingestion_engine._QDRANT_OK = False
+def test_ingestion_engine_pre_filters() -> None:
     store = ingestion_engine.CorpusStore()
-    try:
-        # Passes pre-filters and blended score (0.6206 >= 0.60)
-        first = ingestion_engine.ingest_repository(_osiris_repo("owner/seed"), corpus_store=store, auto_index=True)
-        # Low star repo - rejected by pre-filter
-        low_stars = _osiris_repo("owner/low-stars")
-        low_stars["star_count"] = 10
-        second = ingestion_engine.ingest_repository(low_stars, corpus_store=store, auto_index=True)
-        # Low readme repo - rejected by pre-filter
-        low_readme = _osiris_repo("owner/low-readme")
-        low_readme["readme_length"] = 50
-        third = ingestion_engine.ingest_repository(low_readme, corpus_store=store, auto_index=True)
-    finally:
-        ingestion_engine._QDRANT_OK = original_qdrant_ok
+    # Passes pre-filters and blended score (0.6206 >= 0.60)
+    first = ingestion_engine.ingest_repository(_osiris_repo("owner/seed"), corpus_store=store, auto_index=True)
+    # Low star repo - rejected by pre-filter
+    low_stars = _osiris_repo("owner/low-stars")
+    low_stars["star_count"] = 10
+    second = ingestion_engine.ingest_repository(low_stars, corpus_store=store, auto_index=True)
+    # Low readme repo - rejected by pre-filter
+    low_readme = _osiris_repo("owner/low-readme")
+    low_readme["readme_length"] = 50
+    third = ingestion_engine.ingest_repository(low_readme, corpus_store=store, auto_index=True)
+
 
     assert first.decision == "APPROVED"
     assert first.novelty.final == 1.0
