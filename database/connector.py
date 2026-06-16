@@ -1,58 +1,170 @@
-"""PostgreSQL database connector for repository ingestion and updates."""
+"""PostgreSQL database connector for repository ingestion and updates.
+
+Supports both local PostgreSQL and cloud-hosted Supabase databases.
+Connection is configured via DATABASE_URL environment variable:
+
+  Local:    postgresql://user@localhost:5432/gh_social
+  Supabase: postgresql://postgres.xxx:password@host:port/postgres
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
-from urllib.parse import urlparse
+import ssl
+import re
+from urllib.parse import urlparse, parse_qs
 from typing import Any
 
 import pg8000.dbapi
 
 logger = logging.getLogger("pipeline.database")
 
+# Supabase host patterns that require SSL
+_SUPABASE_HOST_RE = re.compile(
+    r"\.supabase\.(co|com|in|io)$|supabase\.co$|pooler\.supabase\.com$", re.I
+)
+
 
 class PostgreSQLConnector:
-    """Connector for standard PostgreSQL / Supabase databases."""
+    """Connector for standard PostgreSQL and Supabase databases.
+
+    Automatically detects whether the target is a local PostgreSQL instance
+    or a Supabase-hosted database and configures SSL accordingly.
+    """
 
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = database_url or os.getenv("DATABASE_URL")
         self.enabled = bool(self.database_url)
+        self._conn: pg8000.dbapi.Connection | None = None
 
         if not self.enabled:
-            logger.warning("DATABASE_URL is not set. Database integration will be disabled.")
+            logger.warning(
+                "DATABASE_URL is not set. Database integration will be disabled. "
+                "Set it in your .env file — e.g. postgresql://user@localhost:5432/gh_social"
+            )
             return
 
         try:
             self.conn_params = self._parse_url(self.database_url)
+            self._is_supabase = self._detect_supabase(self.database_url)
         except Exception as exc:
             logger.error(f"Failed to parse DATABASE_URL: {exc}. Database integration disabled.")
             self.enabled = False
 
+    # ── URL Parsing ───────────────────────────────────────────────────────────
+
     def _parse_url(self, url: str) -> dict[str, Any]:
-        """Parse PostgreSQL connection URL into pg8000 parameters."""
-        # Handles postgresql:// and postgres:// formats
+        """Parse PostgreSQL connection URL into pg8000 parameters.
+
+        Handles:
+          - postgresql:// and postgres:// schemes
+          - Password-less local connections (Homebrew/peer auth)
+          - Supabase URLs with password and SSL
+          - Query-string parameters (?sslmode=require)
+        """
         result = urlparse(url)
-        username = result.username
-        password = result.password
-        database = result.path[1:] if result.path else ""
-        hostname = result.hostname
+        username = result.username or os.getenv("USER", "postgres")
+        password = result.password  # None for local, present for Supabase
+        database = result.path.lstrip("/") if result.path else "postgres"
+        hostname = result.hostname or "localhost"
         port = result.port or 5432
 
-        return {
+        params: dict[str, Any] = {
             "user": username,
-            "password": password,
             "host": hostname,
             "port": int(port),
             "database": database,
         }
 
+        # Only include password if it's actually set (local PG often has no password)
+        if password:
+            params["password"] = password
+
+        # Auto-enable SSL for Supabase / remote hosts
+        if self._detect_supabase(url) or self._has_ssl_query_param(url):
+            ssl_context = ssl.create_default_context()
+            # Supabase uses pooler certs that may not match hostname exactly
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            params["ssl_context"] = ssl_context
+
+        return params
+
+    @staticmethod
+    def _detect_supabase(url: str) -> bool:
+        """Return True if the URL points to a Supabase-hosted database."""
+        hostname = urlparse(url).hostname or ""
+        return bool(_SUPABASE_HOST_RE.search(hostname))
+
+    @staticmethod
+    def _has_ssl_query_param(url: str) -> bool:
+        """Check if sslmode=require or similar is in the URL query string."""
+        qs = parse_qs(urlparse(url).query)
+        sslmode = qs.get("sslmode", [None])[0]
+        return sslmode in ("require", "verify-ca", "verify-full")
+
+    # ── Connection Management ─────────────────────────────────────────────────
+
     def connect(self) -> pg8000.dbapi.Connection:
-        """Establish a connection to the PostgreSQL database."""
+        """Establish a new connection to the PostgreSQL database."""
         if not self.enabled:
             raise RuntimeError("Database connector is not enabled (missing or invalid DATABASE_URL).")
         return pg8000.dbapi.connect(**self.conn_params)
+
+    def _get_connection(self) -> pg8000.dbapi.Connection:
+        """Get a reusable connection, reconnecting if the previous one is stale."""
+        if self._conn is not None:
+            try:
+                # Lightweight health-check
+                cursor = self._conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.fetchone()
+                return self._conn
+            except Exception:
+                # Connection is dead — close and reconnect
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+
+        self._conn = self.connect()
+        return self._conn
+
+    def verify_connection(self) -> bool:
+        """Test the database connection and return True if successful.
+
+        Logs detailed diagnostics on failure. Useful at startup to
+        distinguish "no DATABASE_URL" from "URL is set but connection fails".
+        """
+        if not self.enabled:
+            return False
+
+        try:
+            conn = self.connect()
+            cursor = conn.cursor()
+            cursor.execute("SELECT version()")
+            version = cursor.fetchone()[0]
+            conn.close()
+            logger.info(f"Database connection verified: {version}")
+            return True
+        except Exception as exc:
+            host = self.conn_params.get("host", "?")
+            port = self.conn_params.get("port", "?")
+            db = self.conn_params.get("database", "?")
+            user = self.conn_params.get("user", "?")
+            has_pw = "yes" if self.conn_params.get("password") else "no"
+            has_ssl = "yes" if "ssl_context" in self.conn_params else "no"
+            logger.error(
+                f"Database connection FAILED: {exc}\n"
+                f"  host={host}  port={port}  database={db}  user={user}  "
+                f"password_set={has_pw}  ssl={has_ssl}"
+            )
+            return False
+
+    # ── Schema Initialization ─────────────────────────────────────────────────
 
     def init_db(self) -> None:
         """Initialize pgcrypto extension and the Repo table if they do not exist."""
@@ -65,26 +177,29 @@ class PostgreSQLConnector:
             conn = self.connect()
             cursor = conn.cursor()
 
-            # Enable pgcrypto for UUID gen_random_uuid() if it isn't already enabled
+            # Enable pgcrypto for UUID gen_random_uuid()
             try:
                 cursor.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto";')
             except Exception as exc:
-                # Sometimes user might not have superuser privileges on Supabase,
-                # but pgcrypto is usually enabled by default on new projects.
-                logger.warning(f"Could not run CREATE EXTENSION pgcrypto: {exc}. Proceeding anyway...")
+                # pgcrypto is enabled by default on Supabase and most managed PG hosts.
+                # On local PG it might need superuser — not fatal.
+                logger.warning(f"Could not enable pgcrypto extension: {exc}. Continuing...")
+                conn.rollback()  # clear the failed transaction state
 
-            # Create table if missing (corresponds to backend team's schema)
+            # Create table if missing — matches the backend team's schema
             create_table_query = """
             CREATE TABLE IF NOT EXISTS Repo (
                 repo_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                github_repo_url VARCHAR(200) NOT NULL UNIQUE,
+                github_repo_url VARCHAR(500) NOT NULL UNIQUE,
                 owner_id VARCHAR(100) NOT NULL,
                 repo_name VARCHAR(200) NOT NULL,
                 full_name VARCHAR(255) NOT NULL,
                 description TEXT,
+                primary_language VARCHAR(50),
                 language_used JSONB DEFAULT '[]'::jsonb,
                 topics JSONB DEFAULT '[]'::jsonb,
                 readme_summary TEXT,
+                star_count INT DEFAULT 0,
                 likes_count INT DEFAULT 0,
                 comments_count INT DEFAULT 0,
                 saves_count INT DEFAULT 0,
@@ -96,6 +211,21 @@ class PostgreSQLConnector:
             );
             """
             cursor.execute(create_table_query)
+
+            # Add columns that may be missing from older schema versions
+            # (safe — ALTER TABLE ADD IF NOT EXISTS avoids errors on columns that already exist)
+            _migration_columns = [
+                ("star_count", "INT DEFAULT 0"),
+                ("primary_language", "VARCHAR(50)"),
+            ]
+            for col_name, col_def in _migration_columns:
+                try:
+                    cursor.execute(
+                        f"ALTER TABLE Repo ADD COLUMN IF NOT EXISTS {col_name} {col_def};"
+                    )
+                except Exception:
+                    conn.rollback()
+
             conn.commit()
             logger.info("Database schemas verified successfully.")
         except Exception as exc:
@@ -107,10 +237,11 @@ class PostgreSQLConnector:
             if conn:
                 conn.close()
 
+    # ── Repository Upsert ─────────────────────────────────────────────────────
+
     def upsert_repositories(self, results: list[Any]) -> int:
-        """
-        Upsert a list of EnrichmentResult objects into the Repo table.
-        
+        """Upsert a list of EnrichmentResult objects into the Repo table.
+
         Returns the number of successfully upserted repositories.
         """
         if not self.enabled:
@@ -131,18 +262,23 @@ class PostgreSQLConnector:
             upsert_query = """
             INSERT INTO Repo (
                 github_repo_url, owner_id, repo_name, full_name, description,
-                language_used, topics, readme_summary, forks_count, pr_count
+                primary_language, language_used, topics, readme_summary,
+                star_count, forks_count, pr_count
             ) VALUES (
-                %s, %s, %s, %s, %s, CAST(%s AS jsonb), CAST(%s AS jsonb), %s, %s, %s
+                %s, %s, %s, %s, %s, %s,
+                CAST(%s AS jsonb), CAST(%s AS jsonb),
+                %s, %s, %s, %s
             )
             ON CONFLICT (github_repo_url) DO UPDATE SET
                 owner_id = EXCLUDED.owner_id,
                 repo_name = EXCLUDED.repo_name,
                 full_name = EXCLUDED.full_name,
                 description = EXCLUDED.description,
+                primary_language = EXCLUDED.primary_language,
                 language_used = EXCLUDED.language_used,
                 topics = EXCLUDED.topics,
                 readme_summary = EXCLUDED.readme_summary,
+                star_count = EXCLUDED.star_count,
                 forks_count = EXCLUDED.forks_count,
                 pr_count = EXCLUDED.pr_count,
                 updated_at = CURRENT_TIMESTAMP;
@@ -152,21 +288,24 @@ class PostgreSQLConnector:
                 p = r.payload
                 raw = r.raw_repository
 
-                # Mapping fields
+                # ── Map enrichment fields to DB columns ───────────────────────
                 github_repo_url = p.get("html_url") or f"https://github.com/{r.repo_id}"
                 owner_id = (raw.get("owner") or {}).get("login") or r.repo_id.partition("/")[0]
                 repo_name = raw.get("name") or r.repo_id.partition("/")[2]
                 full_name = r.repo_id
-                description = p.get("description") or ""
+                description = (p.get("description") or "")[:2000]  # cap for safety
 
-                # Convert languages dict and topics list to JSON string
+                primary_language = p.get("primary_language") or raw.get("language") or "Unknown"
+
+                # Languages as JSONB — store full {lang: bytes} mapping
                 languages_json = json.dumps(r.languages or {})
                 topics_json = json.dumps(r.topics or [])
 
-                # Limit readme clean text to first 5000 characters for readme_summary
+                # Limit readme clean text to first 5000 chars for readme_summary
                 readme_text = getattr(r.readme, "clean_text", "") or ""
                 readme_summary = readme_text[:5000]
 
+                star_count = int(p.get("star_count") or 0)
                 forks_count = int(p.get("fork_count") or 0)
                 pr_count = int(raw.get("pull_requests_count") or 0)
 
@@ -176,9 +315,11 @@ class PostgreSQLConnector:
                     repo_name,
                     full_name,
                     description,
+                    primary_language,
                     languages_json,
                     topics_json,
                     readme_summary,
+                    star_count,
                     forks_count,
                     pr_count,
                 )
@@ -188,10 +329,14 @@ class PostgreSQLConnector:
                     upserted_count += 1
                 except Exception as row_exc:
                     logger.error(f"Failed to upsert repo {full_name}: {row_exc}")
-                    # Continue attempting remaining rows in batch
+                    conn.rollback()
+                    # Re-open a new cursor after rollback so remaining rows can proceed
+                    cursor = conn.cursor()
 
             conn.commit()
-            logger.info(f"Database upsert complete. {upserted_count}/{len(results)} rows successfully upserted.")
+            logger.info(
+                f"Database upsert complete. {upserted_count}/{len(results)} rows successfully upserted."
+            )
         except Exception as exc:
             logger.error(f"Database transaction failed: {exc}")
             if conn:
@@ -202,3 +347,45 @@ class PostgreSQLConnector:
                 conn.close()
 
         return upserted_count
+
+    # ── Query Helpers ─────────────────────────────────────────────────────────
+
+    def get_repo_count(self) -> int:
+        """Return the total number of repos in the database."""
+        if not self.enabled:
+            return 0
+        conn = self.connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM Repo;")
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+    def get_repos(self, *, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        """Fetch repos from the database, ordered by star_count descending."""
+        if not self.enabled:
+            return []
+        conn = self.connect()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT repo_id, github_repo_url, full_name, description,
+                       primary_language, star_count, forks_count, pr_count,
+                       language_used, topics, updated_at
+                FROM Repo
+                ORDER BY star_count DESC NULLS LAST
+                LIMIT %s OFFSET %s;
+                """,
+                (limit, offset),
+            )
+            columns = [
+                "repo_id", "github_repo_url", "full_name", "description",
+                "primary_language", "star_count", "forks_count", "pr_count",
+                "language_used", "topics", "updated_at",
+            ]
+            rows = cursor.fetchall()
+            return [dict(zip(columns, row)) for row in rows]
+        finally:
+            conn.close()
