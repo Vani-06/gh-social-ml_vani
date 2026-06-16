@@ -14,6 +14,7 @@ import logging
 import os
 import ssl
 import re
+import uuid
 from urllib.parse import urlparse, parse_qs
 from typing import Any
 
@@ -231,7 +232,41 @@ class PostgreSQLConnector:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """
-            cursor.execute(create_table_query)
+            try:
+                cursor.execute(create_table_query)
+            except Exception as exc:
+                # If creating table fails (possibly due to gen_random_uuid() being unavailable),
+                # rollback the failed transaction state and try creating without the DEFAULT constraint.
+                logger.warning(
+                    f"Failed to create table with gen_random_uuid() default: {exc}. "
+                    "Attempting fallback table creation without DEFAULT constraint..."
+                )
+                conn.rollback()
+                cursor = conn.cursor()
+                fallback_table_query = """
+                CREATE TABLE IF NOT EXISTS Repo (
+                    repo_id UUID PRIMARY KEY,
+                    github_repo_url VARCHAR(500) NOT NULL UNIQUE,
+                    owner_id VARCHAR(100) NOT NULL,
+                    repo_name VARCHAR(200) NOT NULL,
+                    full_name VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    primary_language VARCHAR(50),
+                    language_used JSONB DEFAULT '[]'::jsonb,
+                    topics JSONB DEFAULT '[]'::jsonb,
+                    readme_summary TEXT,
+                    star_count INT DEFAULT 0,
+                    likes_count INT DEFAULT 0,
+                    comments_count INT DEFAULT 0,
+                    saves_count INT DEFAULT 0,
+                    views_count INT DEFAULT 0,
+                    forks_count INT DEFAULT 0,
+                    pr_count INT DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+                cursor.execute(fallback_table_query)
 
             # Add columns that may be missing from older schema versions
             # (safe — ALTER TABLE ADD IF NOT EXISTS avoids errors on columns that already exist)
@@ -299,11 +334,11 @@ class PostgreSQLConnector:
 
             upsert_query = """
             INSERT INTO Repo (
-                github_repo_url, owner_id, repo_name, full_name, description,
+                repo_id, github_repo_url, owner_id, repo_name, full_name, description,
                 primary_language, language_used, topics, readme_summary,
                 star_count, forks_count, pr_count
             ) VALUES (
-                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s,
                 CAST(%s AS jsonb), CAST(%s AS jsonb),
                 %s, %s, %s, %s
             )
@@ -347,7 +382,12 @@ class PostgreSQLConnector:
                 forks_count = int(p.get("fork_count") or 0)
                 pr_count = int(raw.get("pull_requests_count") or 0)
 
+                # Generate a UUIDv4 in Python to ensure compatibility across all PG environments,
+                # even if the pgcrypto extension is missing or unprivileged.
+                repo_uuid = str(uuid.uuid4())
+
                 params = (
+                    repo_uuid,
                     github_repo_url,
                     owner_id,
                     repo_name,
