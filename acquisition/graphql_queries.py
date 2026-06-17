@@ -53,6 +53,7 @@ def build_batch_metadata_query(repos: list[tuple[str, str]]) -> str:
     owner {{ login __typename }}
     watchers {{ totalCount }}
     issues(states: OPEN) {{ totalCount }}
+    pullRequests(states: OPEN) {{ totalCount }}
     repositoryTopics(first: 20) {{
       nodes {{ topic {{ name }} }}
     }}

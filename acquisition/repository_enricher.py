@@ -210,6 +210,7 @@ class RepositoryEnricher:
             "language": primary_language,
             "forks_count": data.get("forkCount", 0),
             "open_issues_count": data.get("issues", {}).get("totalCount", 0),
+            "pull_requests_count": data.get("pullRequests", {}).get("totalCount", 0),
             "owner": {"login": data.get("owner", {}).get("login")} if data.get("owner") else None,
             "_discovery_category": discovery_category,
             "_discovery_band": discovery_band,
