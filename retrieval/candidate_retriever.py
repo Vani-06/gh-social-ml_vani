@@ -39,7 +39,7 @@ from .config import (
 )
 
 try:
-    from ingestion.qdrant_store import QdrantRepositoryStore
+    from embedding.qdrant_store import QdrantRepositoryStore
     HAS_QDRANT = True
 except ImportError:
     HAS_QDRANT = False

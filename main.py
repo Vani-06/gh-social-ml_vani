@@ -196,10 +196,10 @@ def index_approved_repositories(
         logger.warning("Skipping Qdrant indexing because no repositories passed the filter.")
         return []
 
-    from ingestion.config import QDRANT_API_KEY, QDRANT_COLLECTION_NAME, QDRANT_URL
-    from ingestion.embedding_pipeline import RepositoryEmbeddingPipeline
-    from ingestion.qdrant_store import QdrantRepositoryStore
-    from ingestion.repository_embedding import RepositoryEmbeddingConfig
+    from embedding.config import QDRANT_API_KEY, QDRANT_COLLECTION_NAME, QDRANT_URL
+    from embedding.embedding_pipeline import RepositoryEmbeddingPipeline
+    from embedding.qdrant_store import QdrantRepositoryStore
+    from embedding.repository_embedding import RepositoryEmbeddingConfig
 
     embedding_config = RepositoryEmbeddingConfig(
         model_name=embedding_model or os.getenv("EMBEDDING_MODEL") or "all-MiniLM-L6-v2",
@@ -275,134 +275,6 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def initialize_database() -> PostgreSQLConnector:
-    """Verify database connection and initialize schemas."""
-    from database import PostgreSQLConnector
-    db = PostgreSQLConnector()
-    if not db.enabled:
-        logger.error("Database connector is not enabled. Ingestion requires PostgreSQL.")
-        sys.exit(1)
-        
-    if not db.verify_connection():
-        logger.error("Database connection failed. Check DATABASE_URL in .env.")
-        sys.exit(1)
-        
-    try:
-        db.init_db()
-        return db
-    except Exception as db_exc:
-        logger.error(f"Failed to initialize database: {db_exc}")
-        sys.exit(1)
-
-
-def run_ingestion_pipeline(db: PostgreSQLConnector, current_count: int, args: argparse.Namespace) -> None:
-    """Run acquisition, quality filtering, Qdrant indexing, and PostgreSQL ingestion."""
-    target_count = 1000
-    fetch_limit = target_count - current_count
-    logger.info(f"Approved corpus has {current_count} repositories. Automatically fetching exactly {fetch_limit} repositories to reach the 1000 target...")
-
-    # Load existing repos to filter out duplicates in run_acquisition
-    existing_repos = set()
-    try:
-        conn = db.connect()
-        cursor = conn.cursor()
-        cursor.execute("SELECT full_name FROM Repo;")
-        existing_repos = {row[0] for row in cursor.fetchall()}
-        logger.info(f"Loaded {len(existing_repos)} existing repository names from database.")
-    except Exception as e:
-        logger.warning(f"Could not fetch existing repository names: {e}")
-
-    # Stage 1: Discovery & Acquisition
-    enriched = run_acquisition(token, limit=fetch_limit, batch_size=args.batch_size, existing_repos=existing_repos)
-
-    # Stage 2: Quality Filter
-    kept, dropped = filter_enriched(enriched, min_readme_chars=args.min_readme_chars)
-    logger.info(
-        "Quality filter: %d kept, %d dropped  (min_readme_chars=%d)",
-        len(kept), len(dropped), args.min_readme_chars,
-    )
-    _print_summary(kept, dropped)
-
-    if not kept:
-        logger.warning("No repositories passed the quality filter. Ingestion skipped.")
-        return
-
-    # Stage 3: Indexing to Qdrant (Embeddings)
-    if not args.no_index_qdrant:
-        try:
-            indexed = index_approved_repositories(
-                kept,
-                qdrant_url=args.qdrant_url,
-                qdrant_api_key=args.qdrant_api_key,
-                qdrant_collection=args.qdrant_collection,
-                embedding_model=args.embedding_model,
-            )
-            logger.info("Qdrant indexing complete: %d repository vectors stored", len(indexed))
-        except Exception as exc:
-            logger.error("Qdrant indexing failed; continuing to database ingestion: %s", exc)
-
-    # Stage 4: Ingestion to PostgreSQL (Metadata)
-    try:
-        saved_count = db.upsert_repositories(kept)
-        new_count = db.get_repo_count()
-        logger.info(
-            f"Database ingestion complete: {saved_count} upserted this run, "
-            f"{new_count} total repos in database."
-        )
-    except Exception as db_exc:
-        logger.error(f"Failed to ingest repositories into database: {db_exc}")
-
-
-def run_retrieval_demo(db: PostgreSQLConnector, args: argparse.Namespace) -> None:
-    """Run L1 Candidate Retrieval Demo for all mock users."""
-    try:
-        from mock_users import MOCK_USERS
-        from retrieval import CandidateRetriever
-        from user_onboarding import generate_interest_vector
-
-        retriever = CandidateRetriever(
-            db_connector=db,
-            qdrant_url=args.qdrant_url,
-            qdrant_api_key=args.qdrant_api_key
-        )
-
-        print("\n" + "═" * 80)
-        print("                 L1 CANDIDATE RETRIEVAL PIPELINE DEMO")
-        print("═" * 80)
-
-        for user in MOCK_USERS:
-            print(f"\n👤 USER: {user['full_name']} (@{user['user_id']})")
-            print(f"   Bio: {user['bio']}")
-            print(f"   Interests: {user['interests']}")
-            print("   Generating user interest vector...")
-
-            user_vector = generate_interest_vector(user)
-
-            print("   Running multi-channel retrieval (Target: 130 Semantic, 20 Trending)...")
-            candidates = retriever.retrieve_candidates(
-                user_embedding=user_vector,
-                user_interests=user["interests"]
-            )
-
-            print(f"   Successfully retrieved {len(candidates)} candidates.")
-            print("-" * 80)
-            print(f"{'#':<4} {'Repository':<42} {'Source':<10} {'Score/Stars':<12} {'Embedding Hydrated?'}")
-            print("-" * 80)
-            for i, c in enumerate(candidates, 1):
-                source = c.get("retrieval_source", "unknown")
-                score_str = "—"
-                if source == "semantic":
-                    score_str = f"{c.get('retrieval_score', 0.0):.4f}"
-                elif source == "trending":
-                    score_str = f"{c.get('star_count', 0):,} stars"
-                
-                has_embedding = "Yes (384-d)" if c.get("repo_embedding") is not None and len(c.get("repo_embedding")) == 384 else "No"
-                print(f"{i:<4} {c.get('full_name') or 'Unknown':<42} {source:<10} {score_str:<12} {has_embedding}")
-            print("═" * 80)
-    except Exception as exc:
-        logger.error(f"Failed to run Candidate Retrieval demo: {exc}", exc_info=True)
-
-
 if __name__ == "__main__":
     args = _parse_args()
 
@@ -417,18 +289,133 @@ if __name__ == "__main__":
     logger.info("║  gh-social-ml  ·  Acquisition    ║")
     logger.info("╚══════════════════════════════════╝")
 
-    # Connect and initialize database schema
-    db = initialize_database()
-    current_count = db.get_repo_count()
+    # ── Step 1: Database Check ────────────────────────────────────────────────
+    from database import PostgreSQLConnector
+    db = PostgreSQLConnector()
+    
+    current_count = 0
+    if db.enabled:
+        if db.verify_connection():
+            try:
+                db.init_db()
+                current_count = db.get_repo_count()
+                logger.info(f"Current repositories in PostgreSQL database: {current_count}")
+            except Exception as db_exc:
+                logger.error(f"Failed to query database repository count: {db_exc}")
+        else:
+            logger.error("Database connection failed. Check DATABASE_URL in .env.")
+            sys.exit(1)
+    else:
+        logger.error("Database connector is not enabled. Ingestion requires PostgreSQL.")
+        sys.exit(1)
+
     target_count = 1000
+    kept = []
 
-    if current_count < target_count:
-        run_ingestion_pipeline(db, current_count, args)
-        current_count = db.get_repo_count()
+    # ── Step 2: Fetch & Index if under target ─────────────────────────────────
+    if current_count >= target_count:
+        logger.info(f"Approved corpus has {current_count} repositories (>= {target_count}). Skipping new repository acquisition.")
+    else:
+        fetch_limit = target_count - current_count
+        logger.info(f"Approved corpus has {current_count} repositories. Automatically fetching exactly {fetch_limit} repositories to reach the 1000 target...")
 
+        # Load existing repos to filter out duplicates in run_acquisition
+        existing_repos = set()
+        if db.enabled:
+            try:
+                conn = db.connect()
+                cursor = conn.cursor()
+                cursor.execute("SELECT full_name FROM Repo;")
+                existing_repos = {row[0] for row in cursor.fetchall()}
+                logger.info(f"Loaded {len(existing_repos)} existing repository names from database.")
+            except Exception as e:
+                logger.warning(f"Could not fetch existing repository names: {e}")
+
+        enriched = run_acquisition(token, limit=fetch_limit, batch_size=args.batch_size, existing_repos=existing_repos)
+        kept, dropped = filter_enriched(enriched, min_readme_chars=args.min_readme_chars)
+
+        logger.info(
+            "Quality filter: %d kept, %d dropped  (min_readme_chars=%d)",
+            len(kept), len(dropped), args.min_readme_chars,
+        )
+
+        _print_summary(kept, dropped)
+
+        # Qdrant Indexing
+        if kept and not args.no_index_qdrant:
+            try:
+                indexed = index_approved_repositories(
+                    kept,
+                    qdrant_url=args.qdrant_url,
+                    qdrant_api_key=args.qdrant_api_key,
+                    qdrant_collection=args.qdrant_collection,
+                    embedding_model=args.embedding_model,
+                )
+                logger.info("Qdrant indexing complete: %d repository vectors stored", len(indexed))
+            except Exception as exc:
+                logger.error("Qdrant indexing failed; continuing to database ingestion: %s", exc)
+
+        # PostgreSQL Ingestion
+        if kept:
+            try:
+                saved_count = db.upsert_repositories(kept)
+                current_count = db.get_repo_count()
+                logger.info(
+                    f"Database ingestion complete: {saved_count} upserted this run, "
+                    f"{current_count} total repos in database."
+                )
+            except Exception as db_exc:
+                logger.error(f"Failed to ingest repositories into database: {db_exc}")
+
+    # ── Step 3: Candidate Retrieval for Hardcoded Users ───────────────────────
     if current_count >= target_count:
         logger.info("Corpus target of 1000 reached. Executing L1 Candidate Retrieval Demo...")
-        run_retrieval_demo(db, args)
+        try:
+            from mock_users import MOCK_USERS
+            from retrieval import CandidateRetriever
+            from user_onboarding import generate_interest_vector
+
+            retriever = CandidateRetriever(
+                db_connector=db,
+                qdrant_url=args.qdrant_url,
+                qdrant_api_key=args.qdrant_api_key
+            )
+
+            print("\n" + "═" * 80)
+            print("                 L1 CANDIDATE RETRIEVAL PIPELINE DEMO")
+            print("═" * 80)
+
+            for user in MOCK_USERS:
+                print(f"\n👤 USER: {user['full_name']} (@{user['user_id']})")
+                print(f"   Bio: {user['bio']}")
+                print(f"   Interests: {user['interests']}")
+                print("   Generating user interest vector...")
+
+                user_vector = generate_interest_vector(user)
+
+                print("   Running multi-channel retrieval (Target: 120 Semantic, 30 Trending)...")
+                candidates = retriever.retrieve_candidates(
+                    user_embedding=user_vector,
+                    user_interests=user["interests"]
+                )
+
+                print(f"   Successfully retrieved {len(candidates)} candidates.")
+                print("-" * 80)
+                print(f"{'#':<4} {'Repository':<42} {'Source':<10} {'Score/Stars':<12} {'Embedding Hydrated?'}")
+                print("-" * 80)
+                for i, c in enumerate(candidates, 1):
+                    source = c.get("retrieval_source", "unknown")
+                    score_str = "—"
+                    if source == "semantic":
+                        score_str = f"{c.get('retrieval_score', 0.0):.4f}"
+                    elif source == "trending":
+                        score_str = f"{c.get('star_count', 0):,} stars"
+                    
+                    has_embedding = "Yes (384-d)" if c.get("repo_embedding") is not None and len(c.get("repo_embedding")) == 384 else "No"
+                    print(f"{i:<4} {c.get('full_name') or 'Unknown':<42} {source:<10} {score_str:<12} {has_embedding}")
+                print("═" * 80)
+        except Exception as exc:
+            logger.error(f"Failed to run Candidate Retrieval demo: {exc}", exc_info=True)
     else:
         logger.warning(
             f"Approved corpus size is currently {current_count} repositories. "
