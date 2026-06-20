@@ -4,3 +4,9 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 .env
+.venv/
+venv/
+
+# Local testing and verification scripts
+custom_test_users.json
+verify_app.ps1
