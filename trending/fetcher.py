@@ -17,16 +17,7 @@ from typing import Any
 import requests
 from requests.exceptions import RequestException
 
-from .config import (
-    TRENDING_REPO_LIMIT,
-    GITHUB_TIMEOUT_SECONDS,
-    GITHUB_MAX_RETRIES,
-    FETCH_README,
-    FETCH_TOPICS,
-    README_MAX_LENGTH,
-    CONTINUE_ON_ERROR,
-    MAX_CONSECUTIVE_FAILURES,
-)
+import trending.config as config
 from .logger import get_logger
 
 logger = get_logger(__name__)
@@ -68,18 +59,21 @@ class TrendingFetcher:
         """
         logger.info(f"Fetching trending page from {GITHUB_TRENDING_URL}")
         
-        for attempt in range(GITHUB_MAX_RETRIES):
+        if config.GITHUB_MAX_RETRIES < 1:
+            raise ValueError(f"GITHUB_MAX_RETRIES must be at least 1, got {config.GITHUB_MAX_RETRIES}")
+        
+        for attempt in range(config.GITHUB_MAX_RETRIES):
             try:
                 response = self.session.get(
                     GITHUB_TRENDING_URL,
-                    timeout=GITHUB_TIMEOUT_SECONDS,
+                    timeout=config.GITHUB_TIMEOUT_SECONDS,
                 )
                 response.raise_for_status()
                 logger.info(f"Successfully fetched trending page (status: {response.status_code})")
                 return response.text
             except RequestException as exc:
-                if attempt == GITHUB_MAX_RETRIES - 1:
-                    logger.error(f"Failed to fetch trending page after {GITHUB_MAX_RETRIES} attempts: {exc}")
+                if attempt == config.GITHUB_MAX_RETRIES - 1:
+                    logger.error(f"Failed to fetch trending page after {config.GITHUB_MAX_RETRIES} attempts: {exc}")
                     raise
                 logger.warning(f"Attempt {attempt + 1} failed, retrying: {exc}")
 
@@ -219,7 +213,7 @@ class TrendingFetcher:
         Raises:
             RequestException: If the HTTP request fails.
         """
-        target_limit = limit or TRENDING_REPO_LIMIT
+        target_limit = limit or config.TRENDING_REPO_LIMIT
         logger.info(f"Fetching up to {target_limit} trending repositories from GitHub Trending page")
 
         try:
@@ -247,11 +241,11 @@ class TrendingFetcher:
                 except Exception as exc:
                     self.consecutive_failures += 1
                     logger.error(f"Failed to normalize repository: {exc}")
-                    if not CONTINUE_ON_ERROR:
+                    if not config.CONTINUE_ON_ERROR:
                         raise
-                    if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    if self.consecutive_failures >= config.MAX_CONSECUTIVE_FAILURES:
                         logger.error(
-                            f"Max consecutive failures ({MAX_CONSECUTIVE_FAILURES}) reached. Stopping."
+                            f"Max consecutive failures ({config.MAX_CONSECUTIVE_FAILURES}) reached. Stopping."
                         )
                         break
 

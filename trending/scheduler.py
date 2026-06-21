@@ -18,10 +18,7 @@ try:
 except ImportError:
     HAS_SCHEDULE = False
 
-from .config import (
-    TRENDING_REFRESH_HOURS,
-    validate_config,
-)
+import trending.config as config
 from .fetcher import TrendingFetcher
 from .storage import TrendingStorage
 from .logger import get_logger
@@ -75,7 +72,7 @@ class TrendingScheduler:
         logger.info(f"Received signal {signum}. Shutting down gracefully...")
         self.stop()
 
-    def refresh_trending_repositories(self) -> bool:
+    def refresh_trending_repositories(self, force: bool = False) -> bool:
         """Fetch and store trending repositories.
 
         This is the main refresh operation that:
@@ -92,7 +89,7 @@ class TrendingScheduler:
 
         try:
             # Validate configuration
-            config_errors = validate_config()
+            config_errors = config.validate_config()
             
             if config_errors:
                 logger.error("Configuration errors:")
@@ -101,16 +98,17 @@ class TrendingScheduler:
                 return False
 
             # Check if enough time has passed since last refresh (24-hour guardrail)
-            last_refresh = self.storage.get_last_refresh_time()
-            if last_refresh:
-                time_since_refresh = datetime.now(timezone.utc) - last_refresh
-                hours_since_refresh = time_since_refresh.total_seconds() / 3600
-                if hours_since_refresh < TRENDING_REFRESH_HOURS:
-                    logger.info(
-                        f"Skipping refresh: only {hours_since_refresh:.1f} hours "
-                        f"since last refresh (required: {TRENDING_REFRESH_HOURS} hours)"
-                    )
-                    return True  # Return True to indicate no error, just skipped
+            if not force:
+                last_refresh = self.storage.get_last_refresh_time()
+                if last_refresh:
+                    time_since_refresh = datetime.now(timezone.utc) - last_refresh
+                    hours_since_refresh = time_since_refresh.total_seconds() / 3600
+                    if hours_since_refresh < config.TRENDING_REFRESH_HOURS:
+                        logger.info(
+                            f"Skipping refresh: only {hours_since_refresh:.1f} hours "
+                            f"since last refresh (required: {config.TRENDING_REFRESH_HOURS} hours)"
+                        )
+                        return True  # Return True to indicate no error, just skipped
 
             # Initialize storage schema if needed
             if self.storage.enabled:
@@ -169,11 +167,11 @@ class TrendingScheduler:
             logger.warning("Scheduler is already running.")
             return
 
-        logger.info(f"Starting trending scheduler (refresh every {TRENDING_REFRESH_HOURS} hours)")
+        logger.info(f"Starting trending scheduler (refresh every {config.TRENDING_REFRESH_HOURS} hours)")
         self.running = True
 
         # Schedule the refresh job
-        schedule.every(TRENDING_REFRESH_HOURS).hours.do(self.refresh_trending_repositories)
+        schedule.every(config.TRENDING_REFRESH_HOURS).hours.do(self.refresh_trending_repositories)
 
         # Run once immediately on startup
         logger.info("Running initial refresh on startup...")
@@ -191,14 +189,17 @@ class TrendingScheduler:
             schedule.clear()
             logger.info("Scheduler stopped.")
 
-    def start_once(self) -> bool:
+    def start_once(self, force: bool = False) -> bool:
         """Run a single refresh cycle and return.
+
+        Args:
+            force: If True, bypass the 24-hour guardrail.
 
         Returns:
             True if refresh succeeded, False otherwise.
         """
         logger.info("Running single refresh cycle...")
-        return self.refresh_trending_repositories()
+        return self.refresh_trending_repositories(force=force)
 
     def stop(self) -> None:
         """Stop the scheduled refresh cycle."""
@@ -227,8 +228,11 @@ def run_scheduler() -> None:
         raise
 
 
-def run_once() -> bool:
+def run_once(force: bool = False) -> bool:
     """Entry point for running a single refresh cycle.
+
+    Args:
+        force: If True, bypass the 24-hour guardrail.
 
     Returns:
         True if refresh succeeded, False otherwise.
@@ -237,7 +241,7 @@ def run_once() -> bool:
 
     try:
         scheduler = TrendingScheduler()
-        return scheduler.start_once()
+        return scheduler.start_once(force=force)
     except Exception as exc:
         logger.error(f"Failed to run single refresh cycle: {exc}", exc_info=True)
         return False

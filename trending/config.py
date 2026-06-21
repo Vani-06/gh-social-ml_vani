@@ -5,6 +5,7 @@ ingestion service, including database settings, API limits, and scheduling param
 """
 
 import os
+import re
 
 
 # ── Core Configuration ─────────────────────────────────────────────────────────────
@@ -86,6 +87,13 @@ def validate_config() -> list[str]:
 
     if TRENDING_REFRESH_HOURS <= 0:
         errors.append(f"TRENDING_REFRESH_HOURS must be positive, got {TRENDING_REFRESH_HOURS}")
+
+    # Validate table names to prevent SQL injection
+    table_name_pattern = r'^[a-z_][a-z0-9_]*$'
+    if not re.match(table_name_pattern, TRENDING_TABLE_NAME):
+        errors.append(f"TRENDING_TABLE_NAME must match pattern {table_name_pattern}, got '{TRENDING_TABLE_NAME}'")
+    if not re.match(table_name_pattern, TRENDING_METADATA_TABLE_NAME):
+        errors.append(f"TRENDING_METADATA_TABLE_NAME must match pattern {table_name_pattern}, got '{TRENDING_METADATA_TABLE_NAME}'")
 
     if not DATABASE_URL:
         errors.append("DATABASE_URL is not set. Database integration will be disabled.")

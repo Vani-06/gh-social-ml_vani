@@ -14,11 +14,7 @@ from typing import Any
 
 from database.connector import PostgreSQLConnector
 
-from .config import (
-    TRENDING_TABLE_NAME,
-    TRENDING_METADATA_TABLE_NAME,
-    DATABASE_URL,
-)
+import trending.config as config
 from .logger import get_logger
 
 logger = get_logger(__name__)
@@ -38,7 +34,7 @@ class TrendingStorage:
             database_url: PostgreSQL database URL. If not provided,
                 uses DATABASE_URL from config.
         """
-        self.db_url = database_url or DATABASE_URL
+        self.db_url = database_url or config.DATABASE_URL
         self.connector = PostgreSQLConnector(database_url=self.db_url)
         self.enabled = self.connector.enabled
 
@@ -66,7 +62,7 @@ class TrendingStorage:
 
             # Create trending_repositories table
             create_repos_table = f"""
-            CREATE TABLE IF NOT EXISTS {TRENDING_TABLE_NAME} (
+            CREATE TABLE IF NOT EXISTS {config.TRENDING_TABLE_NAME} (
                 repo_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 full_name VARCHAR(255) NOT NULL UNIQUE,
                 name VARCHAR(200) NOT NULL,
@@ -89,12 +85,12 @@ class TrendingStorage:
             """
             cursor.execute(create_repos_table)
             conn.commit()
-            logger.info(f"Table '{TRENDING_TABLE_NAME}' created or verified.")
+            logger.info(f"Table '{config.TRENDING_TABLE_NAME}' created or verified.")
             logger.info("Note: star_count represents Total Lifetime Stars, daily_stars represents stars gained today.")
 
             # Create trending_metadata table
             create_metadata_table = f"""
-            CREATE TABLE IF NOT EXISTS {TRENDING_METADATA_TABLE_NAME} (
+            CREATE TABLE IF NOT EXISTS {config.TRENDING_METADATA_TABLE_NAME} (
                 key VARCHAR(100) PRIMARY KEY,
                 value TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -102,16 +98,16 @@ class TrendingStorage:
             """
             cursor.execute(create_metadata_table)
             conn.commit()
-            logger.info(f"Table '{TRENDING_METADATA_TABLE_NAME}' created or verified.")
+            logger.info(f"Table '{config.TRENDING_METADATA_TABLE_NAME}' created or verified.")
 
             # Create indexes for better query performance
             indexes = [
-                f"CREATE INDEX IF NOT EXISTS idx_{TRENDING_TABLE_NAME}_star_count "
-                f"ON {TRENDING_TABLE_NAME}(star_count DESC);",
-                f"CREATE INDEX IF NOT EXISTS idx_{TRENDING_TABLE_NAME}_last_seen_at "
-                f"ON {TRENDING_TABLE_NAME}(last_seen_at DESC);",
-                f"CREATE INDEX IF NOT EXISTS idx_{TRENDING_TABLE_NAME}_primary_language "
-                f"ON {TRENDING_TABLE_NAME}(primary_language);",
+                f"CREATE INDEX IF NOT EXISTS idx_{config.TRENDING_TABLE_NAME}_star_count "
+                f"ON {config.TRENDING_TABLE_NAME}(star_count DESC);",
+                f"CREATE INDEX IF NOT EXISTS idx_{config.TRENDING_TABLE_NAME}_last_seen_at "
+                f"ON {config.TRENDING_TABLE_NAME}(last_seen_at DESC);",
+                f"CREATE INDEX IF NOT EXISTS idx_{config.TRENDING_TABLE_NAME}_primary_language "
+                f"ON {config.TRENDING_TABLE_NAME}(primary_language);",
             ]
 
             for index_query in indexes:
@@ -164,7 +160,7 @@ class TrendingStorage:
             cursor = conn.cursor()
 
             upsert_query = f"""
-            INSERT INTO {TRENDING_TABLE_NAME} (
+            INSERT INTO {config.TRENDING_TABLE_NAME} (
                 repo_id, full_name, name, owner, url, description,
                 star_count, daily_stars, fork_count, created_at, pushed_at,
                 primary_language, topics, readme, default_branch,
@@ -188,7 +184,10 @@ class TrendingStorage:
             """
 
             for rank, repo in enumerate(repositories, start=1):
+                savepoint_name = f"repo_upsert_{rank}"
                 try:
+                    cursor.execute(f"SAVEPOINT {savepoint_name};")
+                    
                     # Generate UUID for new repositories
                     repo_uuid = str(uuid.uuid4())
 
@@ -199,7 +198,7 @@ class TrendingStorage:
                     # First seen at: use current time for new repos, existing for updates
                     # We'll check if the repo exists first
                     cursor.execute(
-                        f"SELECT first_seen_at FROM {TRENDING_TABLE_NAME} WHERE full_name = %s;",
+                        f"SELECT first_seen_at FROM {config.TRENDING_TABLE_NAME} WHERE full_name = %s;",
                         (repo["full_name"],),
                     )
                     existing = cursor.fetchone()
@@ -234,8 +233,9 @@ class TrendingStorage:
                     upserted_count += 1
 
                 except Exception as exc:
-                    logger.error(f"Failed to upsert repo {repo.get('full_name')}: {exc}")
-                    break  # Stop processing after first repository-level DB failure
+                    logger.warning(f"Failed to upsert repo {repo.get('full_name')}: {exc}")
+                    cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name};")
+                    continue
 
             conn.commit()
             logger.info(f"Successfully upserted {upserted_count}/{len(repositories)} repositories.")
@@ -244,7 +244,7 @@ class TrendingStorage:
             current_full_names = [repo["full_name"] for repo in repositories]
             if current_full_names:
                 delete_query = f"""
-                DELETE FROM {TRENDING_TABLE_NAME}
+                DELETE FROM {config.TRENDING_TABLE_NAME}
                 WHERE full_name NOT IN ({', '.join(['%s'] * len(current_full_names))});
                 """
                 cursor.execute(delete_query, tuple(current_full_names))
@@ -283,7 +283,7 @@ class TrendingStorage:
             cursor = conn.cursor()
 
             cursor.execute(
-                f"SELECT value FROM {TRENDING_METADATA_TABLE_NAME} WHERE key = %s;",
+                f"SELECT value FROM {config.TRENDING_METADATA_TABLE_NAME} WHERE key = %s;",
                 ("last_refresh",),
             )
             row = cursor.fetchone()
@@ -325,7 +325,7 @@ class TrendingStorage:
                 star_count, fork_count, created_at, pushed_at,
                 primary_language, topics, readme, default_branch,
                 first_seen_at, last_seen_at, trending_rank
-            FROM {TRENDING_TABLE_NAME}
+            FROM {config.TRENDING_TABLE_NAME}
             ORDER BY trending_rank ASC
             LIMIT %s OFFSET %s;
             """
@@ -376,7 +376,7 @@ class TrendingStorage:
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=days_to_keep)
 
             delete_query = f"""
-            DELETE FROM {TRENDING_TABLE_NAME}
+            DELETE FROM {config.TRENDING_TABLE_NAME}
             WHERE last_seen_at < %s;
             """
 
@@ -405,7 +405,7 @@ class TrendingStorage:
             value: Metadata value.
         """
         upsert_query = f"""
-        INSERT INTO {TRENDING_METADATA_TABLE_NAME} (key, value, updated_at)
+        INSERT INTO {config.TRENDING_METADATA_TABLE_NAME} (key, value, updated_at)
         VALUES (%s, %s, CURRENT_TIMESTAMP)
         ON CONFLICT (key) DO UPDATE SET
             value = EXCLUDED.value,

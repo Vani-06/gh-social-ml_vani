@@ -145,7 +145,7 @@ def main():
             run_scheduler()
         elif args.once:
             logger.info("Starting single refresh cycle...")
-            success = run_once()
+            success = run_once(force=True)
             if success:
                 logger.info("Single refresh cycle completed successfully.")
                 sys.exit(0)
