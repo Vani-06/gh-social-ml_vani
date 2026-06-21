@@ -34,18 +34,12 @@ def pytest_configure(config):
 # ── Environment Setup ─────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
-def setup_test_environment():
+def setup_test_environment(monkeypatch):
     """Set up test environment variables before each test."""
     # Set required environment variables for testing
-    os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost:5432/test_db")
-    os.environ.setdefault("TRENDING_REPO_LIMIT", "30")
-    os.environ.setdefault("TRENDING_REFRESH_HOURS", "24")
-    
-    yield
-    
-    # Clean up after test
-    for key in ["DATABASE_URL", "TRENDING_REPO_LIMIT", "TRENDING_REFRESH_HOURS"]:
-        os.environ.pop(key, None)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://test:test@localhost:5432/test_db")
+    monkeypatch.setenv("TRENDING_REPO_LIMIT", "30")
+    monkeypatch.setenv("TRENDING_REFRESH_HOURS", "24")
 
 
 # ── Mock Fixtures ─────────────────────────────────────────────────────────────────

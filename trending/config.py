@@ -121,8 +121,8 @@ def validate_config() -> list[str]:
     # Cast and validate GITHUB_MAX_RETRIES
     try:
         GITHUB_MAX_RETRIES = int(GITHUB_MAX_RETRIES_STR)
-        if GITHUB_MAX_RETRIES < 0:
-            errors.append(f"GITHUB_MAX_RETRIES must be non-negative, got {GITHUB_MAX_RETRIES}")
+        if GITHUB_MAX_RETRIES < 1:
+            errors.append(f"GITHUB_MAX_RETRIES must be at least 1, got {GITHUB_MAX_RETRIES}")
     except (ValueError, TypeError):
         errors.append(f"GITHUB_MAX_RETRIES must be a valid integer, got '{GITHUB_MAX_RETRIES_STR}'")
 

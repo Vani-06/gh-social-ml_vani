@@ -55,6 +55,7 @@ class TrendingScheduler:
         self.fetcher = fetcher or TrendingFetcher()
         self.storage = storage or TrendingStorage()
         self.running = False
+        self.scheduler = schedule.Scheduler()
 
     def _setup_signal_handlers(self) -> None:
         """Setup signal handlers for graceful shutdown."""
@@ -171,7 +172,7 @@ class TrendingScheduler:
         self.running = True
 
         # Schedule the refresh job
-        schedule.every(config.TRENDING_REFRESH_HOURS).hours.do(self.refresh_trending_repositories)
+        self.scheduler.every(config.TRENDING_REFRESH_HOURS).hours.do(self.refresh_trending_repositories)
 
         # Run once immediately on startup
         logger.info("Running initial refresh on startup...")
@@ -180,13 +181,13 @@ class TrendingScheduler:
         # Main scheduling loop
         try:
             while self.running:
-                schedule.run_pending()
+                self.scheduler.run_pending()
                 time.sleep(60)  # Check every minute
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received. Shutting down...")
         finally:
             self.running = False
-            schedule.clear()
+            self.scheduler.clear()
             logger.info("Scheduler stopped.")
 
     def start_once(self, force: bool = False) -> bool:
@@ -209,7 +210,7 @@ class TrendingScheduler:
 
         logger.info("Stopping trending scheduler...")
         self.running = False
-        schedule.clear()
+        self.scheduler.clear()
 
 
 def run_scheduler() -> None:

@@ -15,19 +15,11 @@ Architecture:
 from .fetcher import TrendingFetcher
 from .storage import TrendingStorage
 from .scheduler import TrendingScheduler
-from .config import (
-    TRENDING_REPO_LIMIT,
-    TRENDING_REFRESH_HOURS,
-    TRENDING_TABLE_NAME,
-    TRENDING_METADATA_TABLE_NAME,
-)
+from . import config
 
 __all__ = [
     "TrendingFetcher",
     "TrendingStorage",
     "TrendingScheduler",
-    "TRENDING_REPO_LIMIT",
-    "TRENDING_REFRESH_HOURS",
-    "TRENDING_TABLE_NAME",
-    "TRENDING_METADATA_TABLE_NAME",
+    "config",
 ]

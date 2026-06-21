@@ -243,7 +243,8 @@ class TrendingStorage:
             logger.info(f"Successfully upserted {upserted_count}/{len(repositories)} repositories.")
 
             # Remove repositories that are no longer trending (not in current successful batch)
-            if successful_full_names:
+            # Only perform cleanup if we have a 100% successful batch write
+            if successful_full_names and len(successful_full_names) == len(repositories):
                 delete_query = f"""
                 DELETE FROM {config.TRENDING_TABLE_NAME}
                 WHERE full_name NOT IN ({', '.join(['%s'] * len(successful_full_names))});
@@ -252,11 +253,15 @@ class TrendingStorage:
                 deleted_count = cursor.rowcount
                 conn.commit()
                 logger.info(f"Removed {deleted_count} repositories no longer trending.")
+            elif successful_full_names and len(successful_full_names) != len(repositories):
+                logger.warning(f"Skipping cleanup: batch write was not 100% successful ({len(successful_full_names)}/{len(repositories)} upserted).")
 
             # Update metadata with last refresh timestamp
-            self._update_metadata(cursor, "last_refresh", refresh_ts.isoformat())
-            self._update_metadata(cursor, "repo_count", str(len(successful_full_names)))
-            conn.commit()
+            # Only advance timestamp if data was actually written
+            if successful_full_names:
+                self._update_metadata(cursor, "last_refresh", refresh_ts.isoformat())
+                self._update_metadata(cursor, "repo_count", str(len(successful_full_names)))
+                conn.commit()
 
         except Exception as exc:
             logger.error(f"Failed to upsert repositories: {exc}")

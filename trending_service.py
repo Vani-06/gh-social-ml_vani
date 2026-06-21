@@ -110,12 +110,12 @@ def main():
     logger.info("=" * 60)
 
     # Override configuration if command-line arguments provided (before validation)
-    if args.limit:
+    if args.limit is not None:
         import trending.config as config
         config.TRENDING_REPO_LIMIT_STR = str(args.limit)
         logger.info(f"Override: TRENDING_REPO_LIMIT = {args.limit}")
 
-    if args.refresh_hours:
+    if args.refresh_hours is not None:
         import trending.config as config
         config.TRENDING_REFRESH_HOURS_STR = str(args.refresh_hours)
         logger.info(f"Override: TRENDING_REFRESH_HOURS = {args.refresh_hours}")
