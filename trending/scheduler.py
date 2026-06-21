@@ -137,8 +137,11 @@ class TrendingScheduler:
                 repositories, refresh_timestamp
             )
 
-            if upserted_count == 0:
-                logger.warning("No repositories upserted to database.")
+            # Check if all repositories were successfully upserted
+            if upserted_count != len(repositories):
+                logger.warning(
+                    f"Partial batch write: only {upserted_count}/{len(repositories)} repositories upserted to database."
+                )
                 return False
 
             logger.info(f"Successfully upserted {upserted_count} repositories to database.")

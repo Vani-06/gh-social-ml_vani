@@ -221,7 +221,7 @@ class TrendingFetcher:
         Raises:
             RequestException: If the HTTP request fails.
         """
-        target_limit = limit or config.TRENDING_REPO_LIMIT
+        target_limit = limit if limit is not None else config.TRENDING_REPO_LIMIT
         logger.info(f"Fetching up to {target_limit} trending repositories from GitHub Trending page")
 
         try:

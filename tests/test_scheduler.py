@@ -95,7 +95,7 @@ class TestRefreshTrendingRepositories:
         scheduler = TrendingScheduler(fetcher=custom_fetcher, storage=custom_storage)
         
         with patch.object(custom_storage, 'init_schema'):
-            with patch.object(custom_storage, 'upsert_repositories', return_value=3):
+            with patch.object(custom_storage, 'upsert_repositories', return_value=1):
                 with patch.object(custom_fetcher, 'fetch_trending_repositories', return_value=[
                     {"full_name": "test/repo", "name": "repo", "owner": "test",
                      "url": "https://github.com/test/repo", "description": "",
