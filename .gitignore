@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 .env
+.coverage
 qdrant_storage/
 .venv/
 venv/

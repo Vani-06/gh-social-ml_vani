@@ -5,5 +5,13 @@ numpy
 sentence-transformers
 qdrant-client
 pg8000
+schedule
+
+# Testing dependencies
+pytest
+pytest-cov
+pytest-benchmark
+pytest-mock
+pytest-docker
 
 # docker in your system
