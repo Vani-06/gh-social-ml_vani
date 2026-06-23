@@ -14,4 +14,9 @@ pytest-benchmark
 pytest-mock
 pytest-docker
 
-# docker in your system
+# API & Messaging dependencies
+fastapi>=0.110.0
+uvicorn>=0.28.0
+redis>=5.0.0
+httpx>=0.27.0
+

@@ -92,20 +92,42 @@ class RetrievalEngine:
 
         # Postgres connector — lazy, may be None if DATABASE_URL is not set
         self._db = None
+        self._db_failed = False
+
+        # MMoE Ranker Service — lazy-loaded
+        self._ranker = None
+        self._ranker_failed = False
+
+    # ── Lazy Ranker Service ───────────────────────────────────────────────────
+
+    @property
+    def ranker(self):
+        """Lazy-load the RankerService to avoid importing heavy libraries during startup."""
+        if self._ranker is None and not self._ranker_failed:
+            try:
+                from inference.ranker_service import RankerService
+                project_root = os.path.dirname(os.path.abspath(__file__))
+                model_path = os.path.join(project_root, "inference", "heavy_ranker.pt")
+                scaler_path = os.path.join(project_root, "inference", "feature_scaler.json")
+                self._ranker = RankerService(model_path=model_path, scaler_path=scaler_path)
+            except Exception as exc:
+                logger.warning("Could not initialize RankerService: %s. Using raw cosine scores.", exc)
+                self._ranker_failed = True
+        return self._ranker
 
     # ── Lazy Postgres connector ───────────────────────────────────────────────
 
     @property
     def db(self):
         """Lazy-load the database connector to avoid import-time failures."""
-        if self._db is None:
+        if self._db is None and not self._db_failed:
             try:
                 from database import PostgreSQLConnector
                 self._db = PostgreSQLConnector()
             except Exception as exc:
                 logger.warning("Could not initialize PostgreSQLConnector: %s", exc)
-                self._db = False  # sentinel: tried and failed
-        return self._db if self._db is not False else None
+                self._db_failed = True
+        return self._db
 
     # ── Core retrieval ────────────────────────────────────────────────────────
 
@@ -116,17 +138,75 @@ class RetrievalEngine:
             logger.info("Returning cached recommendation batches for '%s'.", user_id)
             return cached
 
-        # ── 2. Get user embedding from user_profiles ──────────────────────────
-        user_vector = self._get_user_vector(user_id)
+        # ── 2. Get user embedding and payload metadata from user_profiles ─────
+        user_vector, user_payload = self._get_user_data(user_id)
+        user_skills = user_payload.get("skills") or user_payload.get("interests") or []
 
-        # ── 3. Single Qdrant query — see module docstring for why one query ───
+        # ── 3. Single Qdrant query (including vectors for RankerService) ──────
         all_matches = self._repo_store.search(
             user_vector,
             limit=TOTAL_LIMIT,
             exact=True,
+            with_vectors=True,
         )
 
-        # ── 4. Project each match to a slim downstream-friendly dict ──────────
+        # ── 4. Score and Rank candidates using the Heavy Ranker Module ────────
+        ranker = self.ranker
+        if ranker is not None and all_matches:
+            # Construct expected candidates structure for RankerService
+            candidates = []
+            for match in all_matches:
+                payload = match.get("payload") or {}
+                candidates.append({
+                    'id': match.get("repo_id") or payload.get("repo_id"),
+                    'embedding': match.get("vector"),
+                    'doc_quality': float(payload.get("doc_quality", 0.5)),
+                    'code_health': float(payload.get("code_health", 0.5)),
+                    'readme_length': int(payload.get("readme_length", 1000)),
+                    'star_count': int(payload.get("star_count", 0)),
+                    'fork_count': int(payload.get("forks_count") or payload.get("fork_count") or 0),
+                    'open_issues_count': int(payload.get("open_issues_count", 0)),
+                    'pushed_days_ago': int(payload.get("pushed_days_ago", 365)),
+                    'activity_score': float(payload.get("activity_score", 0.0)),
+                    'trend_velocity': float(payload.get("trend_velocity", 0.0)),
+                    'languages': [payload.get("primary_language")] if payload.get("primary_language") else [],
+                    'topics': payload.get("topics") or [],
+                    'tags': payload.get("topics") or []
+                })
+
+            try:
+                ranked_results = ranker.score_batch(user_vector, user_skills, candidates)
+                
+                # Reorder the matches according to the ranker output
+                ranked_repo_ids = [r['repo_id'] for r in ranked_results]
+                matches_by_id = {
+                    (m.get("repo_id") or (m.get("payload") or {}).get("repo_id")): m
+                    for m in all_matches
+                }
+                
+                sorted_matches = []
+                sorted_repo_ids = set()
+                for repo_id in ranked_repo_ids:
+                    if repo_id in matches_by_id:
+                        score_info = next(r for r in ranked_results if r['repo_id'] == repo_id)
+                        # Avoid mutating the original matches in-place
+                        match_copy = dict(matches_by_id[repo_id])
+                        match_copy["score"] = score_info["final_score"]
+                        sorted_matches.append(match_copy)
+                        sorted_repo_ids.add(repo_id)
+                
+                # Catch any missing points to prevent dropping records
+                for mid, m in matches_by_id.items():
+                    repo_id = m.get("repo_id") or (m.get("payload") or {}).get("repo_id")
+                    if repo_id not in sorted_repo_ids:
+                        sorted_matches.append(dict(m))
+                        
+                all_matches = sorted_matches
+                logger.info("Successfully ranked %d candidates using Heavy Ranker.", len(all_matches))
+            except Exception as exc:
+                logger.error("Heavy Ranker scoring failed: %s. Falling back to cosine score ranking.", exc)
+
+        # ── 5. Project each match to a slim downstream-friendly dict ──────────
         items = []
         for match in all_matches:
             payload = match.get("payload") or {}
@@ -143,17 +223,14 @@ class RetrievalEngine:
                 "discovery_band":     payload.get("discovery_band") or "",
             })
 
-        # ── 5. In-memory slice into three ranked batches ──────────────────────
-        # Qdrant returns results pre-sorted by descending cosine score.
-        # batch_1 = highest similarity, batch_3 = lowest.  Do NOT paginate
-        # with separate queries — see module docstring.
+        # ── 6. In-memory slice into three ranked batches ──────────────────────
         batches = {
             "batch_1": items[0:BATCH_SIZE],
             "batch_2": items[BATCH_SIZE : BATCH_SIZE * 2],
             "batch_3": items[BATCH_SIZE * 2 : BATCH_SIZE * 3],
         }
 
-        # ── 6. Persist to Postgres ────────────────────────────────────────────
+        # ── 7. Persist to Postgres ────────────────────────────────────────────
         self._persist_batches(user_id, batches)
 
         logger.info(
@@ -168,11 +245,12 @@ class RetrievalEngine:
     # ── Qdrant helpers ────────────────────────────────────────────────────────
 
     def _get_user_vector(self, user_id: str) -> list[float]:
-        """Retrieve the user's interest embedding from the user_profiles collection.
+        """Retrieve the user's interest embedding from the user_profiles collection."""
+        vector, _ = self._get_user_data(user_id)
+        return vector
 
-        The point ID is a deterministic UUID5 matching the scheme in
-        ``user_onboarding.py:save_to_qdrant``.
-        """
+    def _get_user_data(self, user_id: str) -> tuple[list[float], dict[str, Any]]:
+        """Retrieve both the vector and payload for a user deterministic UUID."""
         point_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"user:{user_id}"))
 
         response = self._client.retrieve(
@@ -188,21 +266,18 @@ class RetrievalEngine:
             )
 
         point = response[0]
+        payload = point.payload or {}
 
-        # user_profiles stores unnamed vectors (list), but handle the
-        # named-vector case defensively in case the schema evolves.
         if isinstance(point.vector, dict):
-            # Explicitly select the configured onboarding vector name
             if TARGET_VECTOR_NAME and TARGET_VECTOR_NAME in point.vector:
-                return list(point.vector[TARGET_VECTOR_NAME])
+                return list(point.vector[TARGET_VECTOR_NAME]), payload
             
-            # Fallback
             vectors = list(point.vector.values())
             if not vectors:
                 raise ValueError(f"User '{user_id}' has an empty named-vector dict.")
-            return list(vectors[0])
+            return list(vectors[0]), payload
 
-        return list(point.vector)
+        return list(point.vector), payload
 
     # ── Postgres persistence ──────────────────────────────────────────────────
 
