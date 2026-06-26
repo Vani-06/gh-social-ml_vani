@@ -1,6 +1,7 @@
 import logging
+import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
@@ -16,6 +17,29 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("pipeline.api")
+
+# ── Shared-secret guard ──────────────────────────────────────────────────────
+_INTERNAL_SECRET = os.getenv("INTERNAL_API_SECRET")
+
+
+async def require_internal_secret(
+    x_internal_secret: str | None = Header(default=None, alias="x-internal-secret"),
+) -> None:
+    """FastAPI dependency that validates the X-Internal-Secret header.
+
+    Fails closed (503) if INTERNAL_API_SECRET is not configured on this server
+    so a misconfigured deploy is never accidentally open.
+    """
+    if not _INTERNAL_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Internal API secret is not configured on this server.",
+        )
+    if x_internal_secret != _INTERNAL_SECRET:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: invalid or missing X-Internal-Secret header.",
+        )
 
 # Global instances
 producer: FeedbackProducer | None = None
@@ -169,7 +193,7 @@ async def submit_feedback(request: FeedbackRequest):
         )
 
 
-@app.post("/api/v1/recommendations/generate")
+@app.post("/api/v1/recommendations/generate", dependencies=[Depends(require_internal_secret)])
 async def generate_recommendations(request: RecommendationRequest):
     """Generate ranked recommendation batches for a user."""
     if retrieval_engine is None:
@@ -201,7 +225,7 @@ async def generate_recommendations(request: RecommendationRequest):
         )
 
 
-@app.post("/api/v1/onboard")
+@app.post("/api/v1/onboard", dependencies=[Depends(require_internal_secret)])
 async def onboard_user(request: OnboardingRequest):
     """Create or update a user's Qdrant profile embedding."""
     if onboarding_pipeline is None:
@@ -243,7 +267,7 @@ async def onboard_user(request: OnboardingRequest):
         )
 
 
-@app.post("/api/v1/embed-repo")
+@app.post("/api/v1/embed-repo", dependencies=[Depends(require_internal_secret)])
 async def embed_repo(request: EmbedRepoRequest):
     """Embed a repository and upsert its vector into Qdrant."""
     if repo_embedding_pipeline is None:
