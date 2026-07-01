@@ -212,6 +212,32 @@ class FeedbackHandler:
                 except Exception:
                     pass
 
+    def _resolve_repo_full_name(self, repo_id: str) -> str:
+        """Resolve a Postgres UUID back to full_name. If already full_name, return it."""
+        if len(repo_id) != 36 or repo_id.count("-") != 4:
+            return repo_id
+        if not self.db or not self.db.enabled:
+            return repo_id
+        conn = None
+        try:
+            conn = self.db.connect()
+            cursor = conn.cursor()
+            cursor.execute("SELECT full_name FROM repo WHERE repo_id::text = %s", (repo_id,))
+            row = cursor.fetchone()
+            if row: return row[0]
+            cursor.execute("SELECT full_name FROM trending_repositories WHERE repo_id::text = %s", (repo_id,))
+            row = cursor.fetchone()
+            if row: return row[0]
+        except Exception as e:
+            logger.error("Error resolving repo full_name: %s", e)
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        return repo_id
+
     def update_user_embedding(self, user_id: str, repo_id: str, alpha: float) -> bool:
         """Shift the user's Qdrant embedding towards (or away from) a repository vector.
 
@@ -226,8 +252,9 @@ class FeedbackHandler:
             logger.warning("Qdrant client not configured; skipping vector shift.")
             return False
 
+        actual_repo_id = self._resolve_repo_full_name(repo_id)
         user_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"user:{user_id}"))
-        repo_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"github:{repo_id}"))
+        repo_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"github:{actual_repo_id}"))
 
         try:
             # 1. Fetch user vector and payload

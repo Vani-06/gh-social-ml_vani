@@ -400,6 +400,8 @@ class RetrievalEngine:
             lang_used = c.get("language_used") or {}
             if isinstance(lang_used, dict):
                 languages += list(lang_used.keys())
+            elif isinstance(lang_used, list):
+                languages += [str(l) for l in lang_used]
 
             repo_emb_raw = c.get("repo_embedding") or []
             repo_emb = np.array(repo_emb_raw, dtype=np.float32) if repo_emb_raw else np.zeros(ranker.emb_dim, dtype=np.float32)
@@ -477,6 +479,7 @@ class RetrievalEngine:
             c_copy["final_score"] = final_score
             c_copy["predictions"] = preds
             c_copy["score_source"] = f"mmoe_{source}"
+            c_copy["languages"] = languages
             enriched.append(c_copy)
 
         enriched.sort(key=lambda x: x["final_score"], reverse=True)

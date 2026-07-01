@@ -160,7 +160,7 @@ def build_vector_payload(
     """Build the Qdrant payload schema for one repository vector."""
     # The below payload fields are for Qdrant filtering and inspection without
     # fetching the original repository object again.
-    repo_id = str(repo.get("id") or "unknown/repository")
+    repo_id = str(repo.get("full_name") or "unknown/repository")
     tags = extract_tags(repo_id, repo.get("extracted_paragraphs", []))
     category = classify_category(dict(repo), tags)
     documentation = score_documentation(dict(repo))
