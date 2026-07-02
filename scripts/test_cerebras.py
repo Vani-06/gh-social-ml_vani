@@ -107,11 +107,9 @@ def main():
                 if duration > 0:
                     print(f"  - Throughput: {completion_tokens / duration:.1f} tokens/second")
 
-            print("\n📝 Generated README Markdown Preview:")
+            print("\n📝 Generated README Markdown:")
             print("-------------------------------------")
-            preview_lines = content.splitlines()[:20]
-            print("\n".join(preview_lines))
-            print("...")
+            print(content)
             print("-------------------------------------")
             
         else:
