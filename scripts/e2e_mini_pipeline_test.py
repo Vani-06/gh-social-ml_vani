@@ -119,7 +119,8 @@ def step_gemma_enrichment(kept: list) -> list:
             continue
 
         # Clean raw text first
-        clean_text = process_markdown(raw_readme).clean_text
+        readme_doc = process_markdown(raw_readme)
+        clean_text = readme_doc.clean_text
         if not clean_text:
             logger.warning("ReadmeProcessor returned empty clean_text for %s.", r.repo_id)
             continue
@@ -128,6 +129,8 @@ def step_gemma_enrichment(kept: list) -> list:
         md = generate_readme_markdown(clean_text[:3000])   # cap to avoid huge token usage
         if md:
             p["readme_markdown"] = md
+            readme_doc.readme_markdown = md
+            r.readme = readme_doc
             logger.info("✅ Groq generated Markdown for %s (%d chars).", r.repo_id, len(md))
         else:
             logger.warning("Groq returned empty result for %s.", r.repo_id)

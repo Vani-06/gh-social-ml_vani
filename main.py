@@ -323,6 +323,10 @@ if __name__ == "__main__":
 
             _print_summary(kept, dropped)
 
+            if not kept:
+                logger.warning("No repositories passed the quality filter. Stopping to avoid infinite reacquisition loop.")
+                break
+
             # PostgreSQL Ingestion (First to ensure consistency and prevent orphaned points in Qdrant)
             db_ingestion_success = False
             if kept and db_verified:
