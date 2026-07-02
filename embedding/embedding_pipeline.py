@@ -75,6 +75,7 @@ class RepositoryEmbeddingPipeline:
         )
         payload = build_vector_payload(
             repo,
+            repo_id=repo_id,
             final_embedding=final_embedding,
             readme_chunks=len(readme_chunks),
             source_hash=source_hash,

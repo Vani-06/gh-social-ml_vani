@@ -3,9 +3,24 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+def _parse_list_field(val: Any) -> list[str]:
+    if not val:
+        return []
+    if isinstance(val, str):
+        try:
+            val = json.loads(val)
+        except Exception:
+            return []
+    if isinstance(val, dict):
+        return list(val.keys())
+    if isinstance(val, list):
+        return [str(x) for x in val if x]
+    return []
 
 from config import (
     README_CHUNK_CHARS,
@@ -121,8 +136,8 @@ def build_metadata_text(repo: Mapping[str, Any]) -> str:
 
 def build_topic_text(repo: Mapping[str, Any]) -> str:
     """Project topics and languages into embedding text."""
-    topics = ", ".join(str(item) for item in repo.get("topics", []) if item)
-    languages = ", ".join(str(item) for item in repo.get("languages", []) if item)
+    topics = ", ".join(_parse_list_field(repo.get("topics")))
+    languages = ", ".join(_parse_list_field(repo.get("languages")))
     return f"GitHub topics: {topics}\nLanguages: {languages}".strip()
 
 
@@ -152,6 +167,7 @@ def combine_repo_tower(
 def build_vector_payload(
     repo: Mapping[str, Any],
     *,
+    repo_id: str,
     final_embedding: Sequence[float],
     readme_chunks: int,
     source_hash: str,
@@ -160,7 +176,6 @@ def build_vector_payload(
     """Build the Qdrant payload schema for one repository vector."""
     # The below payload fields are for Qdrant filtering and inspection without
     # fetching the original repository object again.
-    repo_id = str(repo.get("id") or "unknown/repository")
     tags = extract_tags(repo_id, repo.get("extracted_paragraphs", []))
     category = classify_category(dict(repo), tags)
     documentation = score_documentation(dict(repo))
@@ -171,8 +186,8 @@ def build_vector_payload(
         "html_url": repo.get("html_url"),
         "description": repo.get("description") or "",
         "primary_language": repo.get("primary_language") or "Unknown",
-        "languages": list(repo.get("languages") or []),
-        "topics": list(repo.get("topics") or []),
+        "languages": _parse_list_field(repo.get("languages")),
+        "topics": _parse_list_field(repo.get("topics")),
         "star_count": int(repo.get("star_count") or 0),
         "fork_count": int(repo.get("fork_count") or 0),
         "open_issues_count": int(repo.get("open_issues_count") or 0),
