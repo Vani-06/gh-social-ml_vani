@@ -52,8 +52,8 @@ def main():
     print(f"Source text size: {len(clean_text)} characters.")
 
     # 3. Formulate Cerebras prompt and payload
-    # Cerebras supports LLama 3.1 & 3.3 models: llama-3.3-70b, llama-3.1-8b
-    model = os.getenv("CEREBRAS_MODEL_ID", "llama-3.3-70b")
+    # Cerebras available models: gemma-4-31b, gpt-oss-120b, zai-glm-4.7
+    model = os.getenv("CEREBRAS_MODEL_ID", "gemma-4-31b")
     url = "https://api.cerebras.ai/v1/chat/completions"
     
     prompt = (
