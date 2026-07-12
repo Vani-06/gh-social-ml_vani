@@ -1,7 +1,7 @@
 import pytest
 import math
 import numpy as np
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch, AsyncMock, ANY
 
 from fastapi.testclient import TestClient
 
@@ -18,14 +18,14 @@ class _MemoryFeedbackStore:
     def __init__(self) -> None:
         self.active: set[tuple[str, str, str]] = set()
 
-    def record(self, user_id: str, repo_id: str, interaction_type: str, feedback_score: float):
+    def record(self, user_id: str, repo_id: str, interaction_type: str, feedback_score: float, conn=None):
         key = (user_id, repo_id, interaction_type)
         if key in self.active:
             return None
         self.active.add(key)
         return object()
 
-    def delete(self, user_id: str, repo_id: str, *, interaction_type: str | None = None) -> bool:
+    def delete(self, user_id: str, repo_id: str, *, interaction_type: str | None = None, conn=None) -> bool:
         key = (user_id, repo_id, interaction_type or "")
         if key not in self.active:
             return False
@@ -92,6 +92,10 @@ def test_handler_like_event(mock_qdrant_cls, mock_db_cls):
     mock_db = MagicMock()
     mock_db.enabled = True
     mock_db_cls.return_value = mock_db
+    
+    mock_conn = MagicMock()
+    mock_db.connect.return_value = mock_conn
+    mock_db._get_connection.return_value = mock_conn
 
     mock_qdrant = MagicMock()
     mock_qdrant_cls.return_value = mock_qdrant
@@ -115,22 +119,22 @@ def test_handler_like_event(mock_qdrant_cls, mock_db_cls):
     assert success is True
 
     # Assert Postgres metric increment was executed
-    assert mock_db.connect.call_count == 2  # 1 for metric, 1 for cache invalidation
+    assert mock_db.connect.call_count == 1  # 1 for transaction
     
     # Retrieve connection and cursor mock instances to check execution history
     mock_conn = mock_db.connect.return_value
     mock_cursor = mock_conn.cursor.return_value
     execute_calls = mock_cursor.execute.call_args_list
     
-    assert len(execute_calls) >= 2
+    assert len(execute_calls) >= 3
     
-    # Verify increment SQL was called
-    sql = execute_calls[0][0][0]
+    # Verify increment SQL was called (index 1 because 0 is store.record)
+    sql = execute_calls[1][0][0]
     assert "UPDATE Repo" in sql
     assert "likes_count" in sql
 
-    # Verify cache invalidation SQL was called
-    sql_cache = execute_calls[1][0][0]
+    # Verify cache invalidation SQL was called (index 2)
+    sql_cache = execute_calls[2][0][0]
     assert "DELETE FROM user_recommendation_batches" in sql_cache
 
     # Assert Qdrant upsert was called with updated vector
@@ -325,6 +329,7 @@ def test_clear_actions_only_delete_the_matching_positive_signal():
         USER_UUID,
         "facebook/react",
         interaction_type="like",
+        conn=ANY
     )
     handler.store.record.assert_not_called()
 
@@ -346,6 +351,7 @@ def test_undislike_only_clears_dislike_signal():
         USER_UUID,
         "facebook/react",
         interaction_type="dislike",
+        conn=ANY
     )
     handler.store.record.assert_not_called()
 
@@ -678,4 +684,196 @@ def test_reversal_events_emit_correct_alpha():
     handler.update_user_embedding.assert_called_with(USER_UUID, "facebook/react", 0.15)
 
     assert handler.handle_feedback(USER_UUID, "facebook/react", "unsave") is True
-    handler.update_user_embedding.assert_called_with(USER_UUID, "facebook/react", -0.20)
+
+
+def test_unnormalized_preference_accumulator_undo_math():
+    """Verify that applying an alpha and its inverse perfectly restores the vector using the accumulator."""
+    mock_db = MagicMock()
+    with patch("feedback.event_handlers.QdrantClient") as MockQdrant:
+        qdrant = MockQdrant.return_value
+        handler = FeedbackHandler(db_connector=mock_db, qdrant_url="http://localhost:6333")
+    
+    # Original state
+    user_vector = [0.1] * 384
+    repo_vector = [0.05] * 384
+    
+    # Payload state
+    user_payload = {"preference_accumulator": [0.1] * 384}
+    
+    mock_user_point = MagicMock()
+    mock_user_point.vector = user_vector
+    mock_user_point.payload = user_payload
+    
+    mock_repo_point = MagicMock()
+    mock_repo_point.vector = repo_vector
+    
+    qdrant.retrieve.side_effect = [
+        [mock_user_point],  # 1st call: user
+        [mock_repo_point],  # 2nd call: repo
+        [mock_user_point],  # 3rd call: user (for undo)
+        [mock_repo_point],  # 4th call: repo (for undo)
+    ]
+    
+    # Apply alpha = 0.15
+    res = handler.update_user_embedding(USER_UUID, "facebook/react", 0.15)
+    assert res is True
+    
+    # Get the resulting vector and new accumulator
+    upsert_call_1 = qdrant.upsert.call_args_list[0]
+    points_1 = upsert_call_1.kwargs["points"][0]
+    new_accum_1 = points_1.payload["preference_accumulator"]
+    
+    # Update the mock for the second call
+    mock_user_point.payload = {"preference_accumulator": new_accum_1}
+    
+    # Apply alpha = -0.15 (Undo)
+    res = handler.update_user_embedding(USER_UUID, "facebook/react", -0.15)
+    assert res is True
+    
+    upsert_call_2 = qdrant.upsert.call_args_list[1]
+    points_2 = upsert_call_2.kwargs["points"][0]
+    new_accum_2 = points_2.payload["preference_accumulator"]
+    
+    # Accumulator should be precisely equal to original
+    for orig, restored in zip(user_vector, new_accum_2):
+        assert math.isclose(orig, restored, abs_tol=1e-5)
+
+
+def test_qdrant_failure_rolls_back_postgres_transaction():
+    """Verify that an exception in Qdrant rolls back the Postgres transaction."""
+    mock_db = MagicMock()
+    mock_db.enabled = True
+    mock_conn = MagicMock()
+    mock_db._get_connection.return_value = mock_conn
+    mock_db.connect.return_value = mock_conn
+    
+    with patch("feedback.event_handlers.QdrantClient") as MockQdrant:
+        qdrant = MockQdrant.return_value
+        handler = FeedbackHandler(db_connector=mock_db, qdrant_url="http://localhost:6333")
+        
+    handler.store = MagicMock()
+    handler.store.record.return_value = object() # state changed
+    handler.update_postgres_metrics = MagicMock(return_value=True)
+    handler.invalidate_user_feed_cache = MagicMock(return_value=True)
+    
+    # Force Qdrant update to fail
+    handler.update_user_embedding = MagicMock(return_value=False)
+    
+    # Should catch exception and return False
+    res = handler.handle_feedback(USER_UUID, "facebook/react", "like")
+    assert res is False
+    
+    # Transaction should be rolled back
+    mock_conn.rollback.assert_called_once()
+    mock_conn.commit.assert_not_called()
+
+
+def test_dislike_to_like_switch_emits_correct_sequence():
+    """Simulate undislike + like sequence (switching from dislike→like).
+
+    The backend emits two events: undislike first (to undo the negative signal),
+    then like (to apply the positive signal). Each should produce the correct alpha.
+    """
+    handler = _transition_handler()
+
+    # Step 1: Dislike first to set up state
+    handler.store.active.add((USER_UUID, "facebook/react", "dislike"))
+    assert handler.handle_feedback(USER_UUID, "facebook/react", "undislike") is True
+    # undislike clears the dislike record and emits negative of dislike's alpha
+    # dislike has embedding_alpha = -0.15, so undo = +0.15
+    handler.update_user_embedding.assert_called_with(USER_UUID, "facebook/react", 0.15)
+
+    # Step 2: Now like
+    assert handler.handle_feedback(USER_UUID, "facebook/react", "like") is True
+    # like has embedding_alpha = 0.15
+    handler.update_user_embedding.assert_called_with(USER_UUID, "facebook/react", 0.15)
+
+    alphas = _embedding_alphas(handler)
+    assert alphas == [0.15, 0.15]  # undislike reversal + like forward
+
+
+def test_like_to_dislike_switch_emits_correct_sequence():
+    """Simulate unlike + dislike sequence (switching from like→dislike).
+
+    The backend emits two events: unlike first (to undo the positive signal),
+    then dislike (to apply the negative signal). Each should produce the correct alpha.
+    """
+    handler = _transition_handler()
+
+    # Step 1: Like first to set up state
+    assert handler.handle_feedback(USER_UUID, "facebook/react", "like") is True
+    handler.update_user_embedding.assert_called_with(USER_UUID, "facebook/react", 0.15)
+
+    # Step 2: Unlike (reversal of like)
+    assert handler.handle_feedback(USER_UUID, "facebook/react", "unlike") is True
+    handler.update_user_embedding.assert_called_with(USER_UUID, "facebook/react", -0.15)
+
+    # Step 3: Dislike (forward negative signal)
+    assert handler.handle_feedback(USER_UUID, "facebook/react", "dislike") is True
+    # dislike has embedding_alpha = -0.15
+    handler.update_user_embedding.assert_called_with(USER_UUID, "facebook/react", -0.15)
+
+    alphas = _embedding_alphas(handler)
+    assert alphas == [0.15, -0.15, -0.15]  # like + unlike reversal + dislike forward
+
+
+def test_github_open_shifts_embedding_without_persisting():
+    """github_open should apply alpha=0.07 without calling store.record (non-persisting)."""
+    handler = _transition_handler()
+    handler.store = MagicMock()
+
+    assert handler.handle_feedback(USER_UUID, "facebook/react", "github_open") is True
+
+    # Should NOT persist to database
+    handler.store.record.assert_not_called()
+    handler.store.delete.assert_not_called()
+
+    # Should still shift embedding
+    handler.update_user_embedding.assert_called_once_with(USER_UUID, "facebook/react", 0.07)
+
+    # Should invalidate cache since alpha != 0
+    handler.invalidate_user_feed_cache.assert_called_once_with(USER_UUID)
+
+
+def test_share_shifts_embedding_without_persisting():
+    """share should apply alpha=0.10 without calling store.record (non-persisting)."""
+    handler = _transition_handler()
+    handler.store = MagicMock()
+
+    assert handler.handle_feedback(USER_UUID, "facebook/react", "share") is True
+
+    # Should NOT persist to database
+    handler.store.record.assert_not_called()
+    handler.store.delete.assert_not_called()
+
+    # Should still shift embedding
+    handler.update_user_embedding.assert_called_once_with(USER_UUID, "facebook/react", 0.10)
+
+    # Should invalidate cache since alpha != 0
+    handler.invalidate_user_feed_cache.assert_called_once_with(USER_UUID)
+
+
+def test_permanent_persistence_error_returns_true_not_retried():
+    """ValueError from store.record (e.g. unknown repo) should be treated as a
+    non-retryable no-op: handle_feedback returns True so the consumer acks."""
+    handler = _transition_handler()
+    handler.store = MagicMock()
+    handler.store.record.side_effect = ValueError("Repository not found: unknown/repo")
+
+    # Should succeed (no-op) — not block the queue
+    res = handler.handle_feedback(USER_UUID, "unknown/repo", "like")
+    assert res is True
+
+    # Embedding should NOT be shifted since state_changed stayed False
+    handler.update_user_embedding.assert_not_called()
+
+
+def test_transient_persistence_error_raises_for_retry():
+    """ConnectionError from store.record should propagate so the consumer
+    does NOT acknowledge the message and can retry later."""
+    handler = _transition_handler()
+    handler.store = MagicMock()
+    handler.store.record.side_effect = ConnectionError("database connection lost")
+
+    with pytest.raises(ConnectionError, match="database connection lost"):
+        handler.handle_feedback(USER_UUID, "facebook/react", "like")

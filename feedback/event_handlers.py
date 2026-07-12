@@ -154,56 +154,79 @@ class FeedbackHandler:
         # 1. Update PostgreSQL engagement counts (dwell has no column — no-op)
         db_success = True
         state_changed = action == "dwell" and resolved_alpha != 0.0
-        if action != "dwell":
-            try:
-                if not interaction.persists_feedback:
-                    resolved_alpha = interaction.embedding_alpha
-                    state_changed = resolved_alpha != 0.0
-                elif interaction.clears_interaction_type:
-                    deleted = self.store.delete(
-                        user_id,
-                        repo_id,
-                        interaction_type=interaction.clears_interaction_type,
-                    )
-                    state_changed = deleted
-                    if deleted:
-                        cleared = get_interaction(interaction.clears_interaction_type)
-                        resolved_alpha = -cleared.embedding_alpha
-                else:
-                    record = self.store.record(user_id, repo_id, action, interaction.feedback_score)
-                    state_changed = record is not None
-                    if state_changed:
+        
+        conn = self.db._get_connection() if (self.db and self.db.enabled) else None
+        
+        try:
+            if action != "dwell":
+                try:
+                    if not interaction.persists_feedback:
                         resolved_alpha = interaction.embedding_alpha
-            except Exception as exc:
-                logger.error("Failed to persist feedback: %s", exc)
-                db_success = False
-        logger.info(
-            "Processing feedback: User '%s' -> Repo '%s' [%s] alpha=%.4f changed=%s",
-            user_id, repo_id, action, resolved_alpha, state_changed,
-        )
-        db_success = self.update_postgres_metrics(repo_id, action) and db_success
-        if not db_success:
-            logger.warning("Failed to update engagement metrics in Postgres for '%s'", repo_id)
+                        state_changed = resolved_alpha != 0.0
+                    elif interaction.clears_interaction_type:
+                        deleted = self.store.delete(
+                            user_id,
+                            repo_id,
+                            interaction_type=interaction.clears_interaction_type,
+                            conn=conn,
+                        )
+                        state_changed = deleted
+                        if deleted:
+                            cleared = get_interaction(interaction.clears_interaction_type)
+                            resolved_alpha = -cleared.embedding_alpha
+                    else:
+                        record = self.store.record(user_id, repo_id, action, interaction.feedback_score, conn=conn)
+                        state_changed = record is not None
+                        if state_changed:
+                            resolved_alpha = interaction.embedding_alpha
+                except ValueError as exc:
+                    # Permanent failure (e.g. unknown repo, invalid score).
+                    # Retrying will never succeed — treat as a no-op so the
+                    # consumer can acknowledge the message instead of looping.
+                    logger.warning("Non-retryable persistence error (dropping event): %s", exc)
+                except Exception as exc:
+                    # Transient / unexpected failure (DB connection, timeout).
+                    # Re-raise so the consumer does NOT ack and can retry later.
+                    logger.error("Failed to persist feedback (retryable): %s", exc)
+                    raise
 
-        # 2. Update Qdrant user embedding vector using the resolved alpha
-        qdrant_success = (
-            True
-            if not state_changed or resolved_alpha == 0.0
-            else self.update_user_embedding(user_id, repo_id, resolved_alpha)
-        )
-        if not qdrant_success:
-            logger.warning("Failed to adjust Qdrant profile embedding for user '%s'", user_id)
+            logger.info(
+                "Processing feedback: User '%s' -> Repo '%s' [%s] alpha=%.4f changed=%s",
+                user_id, repo_id, action, resolved_alpha, state_changed,
+            )
+            db_success = self.update_postgres_metrics(repo_id, action, conn=conn) and db_success
+            if not db_success:
+                logger.warning("Failed to update engagement metrics in Postgres for '%s'", repo_id)
 
-        # 3. Invalidate the cached feed batches for this user in PostgreSQL
-        cache_success = True
-        if state_changed and resolved_alpha != 0.0:
-            cache_success = self.invalidate_user_feed_cache(user_id)
-            if not cache_success:
-                logger.warning("Failed to invalidate feed cache for user '%s'", user_id)
+            # 2. Update Qdrant user embedding vector using the resolved alpha
+            qdrant_success = (
+                True
+                if not state_changed or resolved_alpha == 0.0
+                else self.update_user_embedding(user_id, repo_id, resolved_alpha)
+            )
+            if not qdrant_success:
+                logger.warning("Failed to adjust Qdrant profile embedding for user '%s'", user_id)
 
-        return db_success and qdrant_success and cache_success
+            # 3. Invalidate the cached feed batches for this user in PostgreSQL
+            cache_success = True
+            if state_changed and resolved_alpha != 0.0:
+                cache_success = self.invalidate_user_feed_cache(user_id)
+                if not cache_success:
+                    logger.warning("Failed to invalidate feed cache for user '%s'", user_id)
 
-    def update_postgres_metrics(self, repo_id: str, action: str) -> bool:
+            if conn:
+                if db_success and qdrant_success and cache_success:
+                    conn.commit()
+                else:
+                    conn.rollback()
+
+            return db_success and qdrant_success and cache_success
+        except Exception:
+            if conn:
+                conn.rollback()
+            raise
+
+    def update_postgres_metrics(self, repo_id: str, action: str, conn=None) -> bool:
         """Increment the metric count inside the Repo PostgreSQL table."""
         if action == "dwell":
             column = None
@@ -221,9 +244,9 @@ class FeedbackHandler:
             logger.error("Forbidden database column update: '%s'", column)
             return False
 
-        conn = None
+        auto_commit = conn is None
         try:
-            conn = self.db.connect()
+            conn = conn or self.db.connect()
             cursor = conn.cursor()
 
             # Increment count defensively handling NULL values using COALESCE
@@ -234,13 +257,14 @@ class FeedbackHandler:
             WHERE full_name = %s OR repo_id::text = %s;
             """
             cursor.execute(query, (repo_id, repo_id))
-            conn.commit()
+            if auto_commit:
+                conn.commit()
 
             logger.info("Successfully incremented %s count for repo '%s'", column, repo_id)
             return True
         except Exception as exc:
             logger.error("Error updating metrics in Postgres for repo '%s': %s", repo_id, exc)
-            if conn:
+            if conn and auto_commit:
                 try:
                     conn.rollback()
                 except Exception:
@@ -349,8 +373,22 @@ class FeedbackHandler:
                 logger.error("Repository '%s' embedding dimension mismatch or missing.", repo_id)
                 return False
 
-            # 3. Calculate shifted vector
-            updated_vector = shift_vector(user_vector, repo_vector, alpha)
+            # 3. Calculate shifted vector using unnormalized preference accumulator
+            accumulator = user_payload.get("preference_accumulator")
+            if not accumulator or len(accumulator) != EMBEDDING_DIM:
+                # Fallback to current vector if accumulator is missing
+                accumulator = user_vector
+
+            u_accum = np.array(accumulator, dtype=np.float32)
+            r = np.array(repo_vector, dtype=np.float32)
+            new_accum = u_accum + alpha * r
+            user_payload["preference_accumulator"] = new_accum.tolist()
+
+            norm = np.linalg.norm(new_accum)
+            if norm > 0:
+                updated_vector = (new_accum / norm).tolist()
+            else:
+                updated_vector = new_accum.tolist()
 
             # 4. Save updated vector back to Qdrant, preserving metadata payload
             final_vector = {vector_name: updated_vector} if vector_name is not None else updated_vector

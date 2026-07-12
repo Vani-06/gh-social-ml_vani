@@ -40,7 +40,7 @@ def _setup_logging(level: str = "INFO") -> None:
 
 logger = logging.getLogger("pipeline.acquisition")
 
-CORPUS_TARGET_COUNT = 1000
+CORPUS_TARGET_COUNT = 3500
 
 
 # ══════════════════════════════════════════════════════════════════════════════

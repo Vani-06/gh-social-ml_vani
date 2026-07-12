@@ -37,55 +37,8 @@ class FeedbackStore:
         self.db = db_connector or PostgreSQLConnector()
 
     def init_schema(self) -> None:
-        if not self.db.enabled:
-            return
-        conn = self.db._get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_feedback (
-                user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-                repo_id UUID NOT NULL REFERENCES repo(repo_id) ON DELETE CASCADE,
-                interaction_type VARCHAR(50) NOT NULL,
-                feedback_score DOUBLE PRECISION NOT NULL
-                    CHECK (feedback_score >= -1.0 AND feedback_score <= 1.0),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user_id, repo_id, interaction_type)
-            );
-            CREATE INDEX IF NOT EXISTS user_feedback_user_updated_idx
-                ON user_feedback (user_id, updated_at DESC);
-            DO $$
-            BEGIN
-                IF EXISTS (
-                    SELECT 1
-                    FROM pg_constraint
-                    WHERE conrelid = 'user_feedback'::regclass
-                      AND conname = 'user_feedback_pkey'
-                      AND (
-                          SELECT array_agg(a.attname ORDER BY k.ordinality)
-                          FROM unnest(conkey) WITH ORDINALITY AS k(attnum, ordinality)
-                          JOIN pg_attribute a
-                            ON a.attrelid = conrelid
-                           AND a.attnum = k.attnum
-                      ) IS DISTINCT FROM ARRAY['user_id', 'repo_id', 'interaction_type']
-                ) THEN
-                    ALTER TABLE user_feedback DROP CONSTRAINT user_feedback_pkey;
-                END IF;
-
-                IF NOT EXISTS (
-                    SELECT 1
-                    FROM pg_constraint
-                    WHERE conrelid = 'user_feedback'::regclass
-                      AND conname = 'user_feedback_pkey'
-                ) THEN
-                    ALTER TABLE user_feedback
-                    ADD CONSTRAINT user_feedback_pkey
-                    PRIMARY KEY (user_id, repo_id, interaction_type);
-                END IF;
-            END $$;
-            """
-        )
-        conn.commit()
+        # Removed runtime schema generation; migration handled externally by Drizzle
+        pass
 
     def record(
         self,
@@ -93,6 +46,7 @@ class FeedbackStore:
         repo_id: str,
         interaction_type: str,
         feedback_score: float,
+        conn=None,
     ) -> FeedbackRecord | None:
         if not -1.0 <= feedback_score <= 1.0:
             raise ValueError("feedback_score must be in the range [-1.0, 1.0]")
@@ -101,7 +55,8 @@ class FeedbackStore:
             return None
 
         self.init_schema()
-        conn = self.db._get_connection()
+        auto_commit = conn is None
+        conn = conn or self.db._get_connection()
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -131,11 +86,14 @@ class FeedbackStore:
                 (repo_id, repo_id),
             )
             if not cursor.fetchone():
-                conn.commit()
+                if auto_commit:
+                    conn.commit()
                 raise ValueError(f"Repository not found: {repo_id}")
-            conn.commit()
+            if auto_commit:
+                conn.commit()
             return None
-        conn.commit()
+        if auto_commit:
+            conn.commit()
         if not isinstance(row, (tuple, list)):
             # Some unit-test database doubles do not model RETURNING rows.
             return FeedbackRecord(user_id, repo_id, interaction_type, feedback_score)
@@ -147,12 +105,14 @@ class FeedbackStore:
         repo_id: str,
         *,
         interaction_type: str | None = None,
+        conn=None,
     ) -> bool:
         user_id = _normalize_user_uuid(user_id)
         if not self.db.enabled:
             return False
         self.init_schema()
-        conn = self.db._get_connection()
+        auto_commit = conn is None
+        conn = conn or self.db._get_connection()
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -167,7 +127,8 @@ class FeedbackStore:
             (user_id, repo_id, repo_id, interaction_type, interaction_type),
         )
         deleted = cursor.rowcount > 0
-        conn.commit()
+        if auto_commit:
+            conn.commit()
         return deleted
 
     def list_for_user(self, user_id: str) -> list[FeedbackRecord]:

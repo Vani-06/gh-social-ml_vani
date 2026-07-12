@@ -166,14 +166,13 @@ class FeedbackConsumer:
                                 processed_success = False
                                 try:
                                     # Execute vector updates and metric increments
-                                    await loop.run_in_executor(
+                                    processed_success = await loop.run_in_executor(
                                         None,
                                         lambda: self.handler.handle_feedback(
                                             user_id, repo_id, action,
                                             dwell_seconds=dwell_seconds,
                                         ),
                                     )
-                                    processed_success = True
                                     
                                     # Mark as processed in Redis (expires in 24 hours)
                                     try:
