@@ -1,5 +1,6 @@
 import logging
 import os
+from uuid import UUID
 
 # Load .env FIRST — before any imports that call os.getenv() at module level
 # (e.g. scripts/user_onboarding.py reads QDRANT_URL on import)
@@ -21,6 +22,8 @@ from pydantic import BaseModel, Field
 
 from feedback.producer import FeedbackProducer
 from feedback.consumer import FeedbackConsumer
+from feedback.interactions import INTERACTIONS, get_interaction
+from feedback.storage import FeedbackStore
 from retrieval_engine import RetrievalEngine
 from scripts.user_onboarding import UserOnboardingPipeline
 from embedding.embedding_pipeline import RepositoryEmbeddingPipeline
@@ -63,14 +66,15 @@ consumer: FeedbackConsumer | None = None
 retrieval_engine: RetrievalEngine | None = None
 onboarding_pipeline: UserOnboardingPipeline | None = None
 repo_embedding_pipeline: RepositoryEmbeddingPipeline | None = None
+feedback_store: FeedbackStore | None = None
 
 
 class FeedbackRequest(BaseModel):
-    user_id: str = Field(..., description="Unique ID of the user performing the action")
+    user_id: UUID = Field(..., description="Application user UUID performing the action")
     repo_id: str = Field(..., description="Full name or UUID of the repository")
     action: str = Field(
         ...,
-        description="Interaction action type: click, like, save, skip, or dwell",
+        description="Versioned feedback action type",
     )
     dwell_seconds: float | None = Field(
         default=None,
@@ -118,13 +122,15 @@ class EmbedRepoRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager to initialize components and background worker tasks."""
-    global producer, consumer, retrieval_engine, onboarding_pipeline, repo_embedding_pipeline
+    global producer, consumer, retrieval_engine, onboarding_pipeline, repo_embedding_pipeline, feedback_store
     logger.info("Initializing API components...")
     producer = FeedbackProducer()
     consumer = FeedbackConsumer()
     retrieval_engine = RetrievalEngine()
     onboarding_pipeline = UserOnboardingPipeline()
     repo_embedding_pipeline = RepositoryEmbeddingPipeline()
+    feedback_store = FeedbackStore()
+    feedback_store.init_schema()
     
     # Start background event consume worker loop
     await consumer.start()
@@ -152,11 +158,11 @@ async def submit_feedback(request: FeedbackRequest):
     """Submit a user interaction event.
 
     Pushes the event to the processing queue and returns 202 Accepted.
-    Supported actions: ``click``, ``like``, ``save``, ``skip``, ``dwell``.
+    Supported actions are the versioned feedback contract actions plus ``dwell``.
     When ``action`` is ``dwell``, ``dwell_seconds`` must be provided and > 0.
     """
     action = request.action.lower()
-    valid_actions = {"click", "like", "save", "skip", "dwell"}
+    valid_actions = set(INTERACTIONS) | {"dwell"}
     if action not in valid_actions:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -173,7 +179,7 @@ async def submit_feedback(request: FeedbackRequest):
     try:
         # Enqueue the event (dwell_seconds is forwarded as keyword-only arg)
         success = await producer.submit_feedback(
-            user_id=request.user_id,
+            user_id=str(request.user_id),
             repo_id=request.repo_id,
             action=action,
             dwell_seconds=request.dwell_seconds,
@@ -186,10 +192,12 @@ async def submit_feedback(request: FeedbackRequest):
             )
 
         response_data: dict = {
-            "user_id": request.user_id,
+            "user_id": str(request.user_id),
             "repo_id": request.repo_id,
             "action": action,
         }
+        if action != "dwell":
+            response_data["feedback_score"] = get_interaction(action).feedback_score
         if request.dwell_seconds is not None:
             response_data["dwell_seconds"] = request.dwell_seconds
 
@@ -207,6 +215,38 @@ async def submit_feedback(request: FeedbackRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal API error: {str(exc)}",
+        )
+
+
+@app.get("/api/v1/feedback/{user_id}", dependencies=[Depends(require_internal_secret)])
+async def get_user_feedback(user_id: str):
+    """Return the user's persisted effective feedback records."""
+    if feedback_store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Feedback store is not initialized.",
+        )
+    try:
+        records = await run_in_threadpool(feedback_store.list_for_user, user_id)
+        return {
+            "status": "success",
+            "user_id": user_id,
+            "data": [
+                {
+                    "user_id": record.user_id,
+                    "repo_id": record.repo_id,
+                    "interaction_type": record.interaction_type,
+                    "feedback_score": record.feedback_score,
+                    "timestamp": record.updated_at,
+                }
+                for record in records
+            ],
+        }
+    except Exception as exc:
+        logger.exception("Failed to retrieve feedback for '%s'", user_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve feedback: {str(exc)}",
         )
 
 
