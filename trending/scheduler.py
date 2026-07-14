@@ -11,7 +11,7 @@ import signal
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any
 
 try:
     import schedule
@@ -38,6 +38,7 @@ class TrendingScheduler:
         self,
         fetcher: TrendingFetcher | None = None,
         storage: TrendingStorage | None = None,
+        synchronizer: Any | None = None,
     ) -> None:
         """Initialize the trending scheduler.
 
@@ -55,6 +56,7 @@ class TrendingScheduler:
 
         self.fetcher = fetcher or TrendingFetcher()
         self.storage = storage or TrendingStorage()
+        self.synchronizer = synchronizer
         self.running = False
         self.scheduler = schedule.Scheduler()
 
@@ -145,6 +147,34 @@ class TrendingScheduler:
                 return False
 
             logger.info(f"Successfully upserted {upserted_count} repositories to database.")
+
+            if self.synchronizer is not None or config.TRENDING_QDRANT_SYNC_ENABLED:
+                synchronizer = self.synchronizer
+                if synchronizer is None:
+                    from .qdrant_sync import TrendingQdrantSynchronizer
+
+                    synchronizer = TrendingQdrantSynchronizer()
+                sync_result = synchronizer.synchronize(
+                    repositories,
+                    refreshed_at=refresh_timestamp,
+                )
+                if sync_result.missing:
+                    logger.warning(
+                        "%d trending repositories have no existing Qdrant point: %s",
+                        len(sync_result.missing),
+                        ", ".join(sync_result.missing[:10]),
+                    )
+                if sync_result.failed:
+                    logger.error(
+                        "Trending Qdrant synchronization failed for %d repositories: %s",
+                        len(sync_result.failed),
+                        sync_result.failed,
+                    )
+                    return False
+                logger.info(
+                    "Synchronized trending signals for %d Qdrant points.",
+                    len(sync_result.updated),
+                )
 
             # Log summary
             last_refresh = self.storage.get_last_refresh_time()

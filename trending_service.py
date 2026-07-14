@@ -32,7 +32,7 @@ from trending.config import validate_config, TRENDING_REPO_LIMIT_STR, TRENDING_R
 from trending.logger import setup_logger
 
 
-def parse_args():
+def parse_args(argv: list[str] | None = None):
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         description="GitHub Trending Repository Ingestion Service",
@@ -92,7 +92,19 @@ Examples:
         help="Validate configuration and exit without running",
     )
 
-    return parser.parse_args()
+    sync_group = parser.add_mutually_exclusive_group()
+    sync_group.add_argument(
+        "--sync-qdrant",
+        action="store_true",
+        help="Patch current trending signals onto existing Qdrant points",
+    )
+    sync_group.add_argument(
+        "--no-sync-qdrant",
+        action="store_true",
+        help="Disable Qdrant trend-signal synchronization",
+    )
+
+    return parser.parse_args(argv)
 
 
 def main():
@@ -119,6 +131,11 @@ def main():
         import trending.config as config
         config.TRENDING_REFRESH_HOURS_STR = str(args.refresh_hours)
         logger.info(f"Override: TRENDING_REFRESH_HOURS = {args.refresh_hours}")
+
+    if args.sync_qdrant or args.no_sync_qdrant:
+        import trending.config as config
+        config.TRENDING_QDRANT_SYNC_STR = "true" if args.sync_qdrant else "false"
+        logger.info("Override: TRENDING_QDRANT_SYNC_ENABLED = %s", args.sync_qdrant)
 
     # Validate configuration (after CLI overrides)
     config_errors = validate_config()
