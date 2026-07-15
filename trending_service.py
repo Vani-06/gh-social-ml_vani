@@ -107,9 +107,9 @@ Examples:
     return parser.parse_args(argv)
 
 
-def main():
+def main(argv: list[str] | None = None):
     """Main entry point for the trending service."""
-    args = parse_args()
+    args = parse_args(argv)
 
     # Setup logging
     logger = setup_logger(

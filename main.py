@@ -132,9 +132,8 @@ def _positive_int(value: str) -> int:
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    from acquisition.config import CorpusPipelineSettings
+    from acquisition.config import positive_int
 
-    defaults = CorpusPipelineSettings.from_environment()
     parser = argparse.ArgumentParser(
         prog="main.py",
         description=(
@@ -146,13 +145,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--batch-size", type=_positive_int, default=15)
     parser.add_argument("--workers", type=_positive_int, default=4)
     parser.add_argument("--min-readme-chars", type=_positive_int, default=200)
-    parser.add_argument(
-        "--corpus-target", type=_positive_int, default=defaults.target_count
-    )
-    parser.add_argument("--max-cycles", type=_positive_int, default=defaults.max_cycles)
-    parser.add_argument(
-        "--checkpoint-path", type=Path, default=defaults.checkpoint_path
-    )
+    parser.add_argument("--corpus-target", type=_positive_int, default=None)
+    parser.add_argument("--max-cycles", type=_positive_int, default=None)
+    parser.add_argument("--checkpoint-path", type=Path, default=None)
     parser.add_argument(
         "--index-qdrant",
         action="store_true",
@@ -168,14 +163,79 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Development only: permit indexing when Postgres is unavailable",
     )
+    parser.add_argument(
+        "--validate-config",
+        action="store_true",
+        help="Validate offline-worker configuration without opening network connections",
+    )
     parser.add_argument("--log-level", default="INFO")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.corpus_target is None:
+        args.corpus_target = positive_int(
+            os.getenv("CORPUS_TARGET_COUNT", "50000"),
+            name="CORPUS_TARGET_COUNT",
+        )
+    if args.max_cycles is None:
+        args.max_cycles = positive_int(
+            os.getenv("ACQUISITION_MAX_CYCLES", "1"),
+            name="ACQUISITION_MAX_CYCLES",
+        )
+    if args.checkpoint_path is None:
+        args.checkpoint_path = Path(
+            os.getenv(
+                "ACQUISITION_CHECKPOINT_PATH",
+                ".cache/acquisition_checkpoint.json",
+            )
+        )
+    return args
+
+
+def _configuration_errors(args: argparse.Namespace) -> list[str]:
+    """Return configuration errors without contacting external services."""
+    errors: list[str] = []
+    token = os.getenv("GITHUB_TOKEN")
+    if not token or token == "your_github_token_here":
+        errors.append("GITHUB_TOKEN is missing or still uses the placeholder value")
+    if not args.allow_qdrant_without_postgres and not os.getenv("DATABASE_URL"):
+        errors.append("DATABASE_URL is required for production corpus ingestion")
+
+    if not args.no_index_qdrant:
+        try:
+            from embedding.repository_embedding import RepositoryEmbeddingConfig
+
+            RepositoryEmbeddingConfig(
+                model_name=args.embedding_model
+                or os.getenv("EMBEDDING_MODEL")
+                or "all-MiniLM-L6-v2"
+            )
+        except Exception as exc:
+            errors.append(f"embedding configuration is invalid: {exc}")
+        qdrant_url = args.qdrant_url or os.getenv(
+            "QDRANT_URL", "http://localhost:6333"
+        )
+        if not str(qdrant_url).strip():
+            errors.append("QDRANT_URL must not be empty when indexing is enabled")
+    return errors
 
 
 def main(argv: list[str] | None = None) -> int:
     """Run one bounded corpus-ingestion invocation and return an exit code."""
-    args = _parse_args(argv)
+    try:
+        args = _parse_args(argv)
+    except ValueError as exc:
+        _setup_logging()
+        logger.error("Invalid corpus configuration: %s", exc)
+        return 1
     _setup_logging(args.log_level)
+
+    if args.validate_config:
+        errors = _configuration_errors(args)
+        if errors:
+            for error in errors:
+                logger.error("Configuration error: %s", error)
+            return 1
+        logger.info("Corpus worker configuration is valid; no connections were opened.")
+        return 0
 
     token = os.getenv("GITHUB_TOKEN")
     if not token or token == "your_github_token_here":
