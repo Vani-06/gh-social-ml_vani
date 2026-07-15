@@ -3,6 +3,7 @@ from .repository_embedding import RepositoryEmbeddingConfig, RepositoryEmbedding
 from .qdrant_store import QdrantRepositoryStore
 from .vector_contract import (
     REPOSITORY_COLLECTION_CONTRACT,
+    REPOSITORY_DISCOVERY_CHANNELS,
     REPOSITORY_PAYLOAD_FIELD_TYPES,
     REPOSITORY_PAYLOAD_REQUIRED_FIELDS,
     USER_PROFILE_COLLECTION_CONTRACT,
@@ -24,6 +25,7 @@ __all__ = [
     "index_repositories",
     "VectorCollectionContract",
     "REPOSITORY_COLLECTION_CONTRACT",
+    "REPOSITORY_DISCOVERY_CHANNELS",
     "USER_PROFILE_COLLECTION_CONTRACT",
     "REPOSITORY_PAYLOAD_FIELD_TYPES",
     "REPOSITORY_PAYLOAD_REQUIRED_FIELDS",

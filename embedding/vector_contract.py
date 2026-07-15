@@ -56,6 +56,18 @@ USER_PROFILE_COLLECTION_CONTRACT = VectorCollectionContract(
     model_name=REPOSITORY_EMBEDDING_MODEL,
 )
 
+# Stable public names for Qdrant-only discovery channels.  Person 3 can select
+# a channel without duplicating knowledge of the underlying payload field.
+REPOSITORY_DISCOVERY_CHANNELS: Mapping[str, str] = MappingProxyType(
+    {
+        "trend": "trend_velocity",
+        "activity": "activity_score",
+        "popularity": "star_count",
+        "freshness": "pushed_at",
+        "quality": "doc_quality",
+    }
+)
+
 
 def _canonical_identifier(value: str, *, field_name: str) -> str:
     if not isinstance(value, str):

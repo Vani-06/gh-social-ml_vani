@@ -97,6 +97,11 @@ QDRANT_PAYLOAD_INDEX_FIELDS = [
     "discovery_category",
     "discovery_band",
     "star_count",
+    "trend_velocity",
+    "activity_score",
+    "doc_quality",
+    "code_health",
+    "pushed_days_ago",
     "updated_at",
     "pushed_at",
 ]
