@@ -2,9 +2,11 @@ import uuid
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from api.v2 import FeedbackBatch, RecommendationRequest
+from api.v2 import FeedbackBatch, RecommendationRequest, router
 from embedding.qdrant_store import QdrantRepositoryStore
 
 
@@ -39,3 +41,17 @@ def test_repository_point_id_is_the_canonical_backend_uuid():
     assert QdrantRepositoryStore._point_id(repo_id) == repo_id
     with pytest.raises(ValueError):
         QdrantRepositoryStore._point_id("owner/repository")
+
+
+def test_v2_health_requires_internal_auth(monkeypatch):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    monkeypatch.setenv("INTERNAL_API_SECRET", "test-internal-secret")
+    response = client.get("/api/v2/health")
+    assert response.status_code == 401
+
+    monkeypatch.delenv("INTERNAL_API_SECRET")
+    response = client.get("/api/v2/health")
+    assert response.status_code == 503

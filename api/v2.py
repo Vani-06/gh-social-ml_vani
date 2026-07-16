@@ -187,7 +187,7 @@ async def onboard_user(request: OnboardingJob):
     return {"accepted": True, "user_id": str(request.user_id), "profile_version": request.profile_version}
 
 
-@router.get("/health")
+@router.get("/health", dependencies=[Depends(require_internal_secret)])
 async def health():
     try:
         qdrant = await run_in_threadpool(retriever().health)
