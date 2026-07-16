@@ -358,6 +358,42 @@ def test_ranker_unavailable_returns_cosine_order(mock_retrieval_dependencies):
     assert all(item["score_source"] == "cosine_fallback" for item in ranked)
 
 
+def test_ranker_without_loaded_model_returns_cosine_order(
+    mock_retrieval_dependencies,
+):
+    engine = RetrievalEngine(qdrant_url="http://localhost:6333")
+    ranker = MagicMock()
+    ranker.emb_dim = 384
+    ranker.score_batch.return_value = []
+    engine._ranker = ranker
+    candidates = [
+        {
+            "repo_id": REPO_1_ID,
+            "repo_embedding": [0.1] * 384,
+            "retrieval_score": 0.2,
+        },
+        {
+            "repo_id": REPO_2_ID,
+            "repo_embedding": [0.2] * 384,
+            "retrieval_score": 0.9,
+        },
+        {
+            "repo_id": REPO_3_ID,
+            "repo_embedding": [0.3] * 384,
+            "retrieval_score": 0.4,
+        },
+    ]
+
+    ranked = engine._rank_candidates([0.0] * 384, [], candidates)
+
+    assert [item["repo_id"] for item in ranked] == [
+        REPO_2_ID,
+        REPO_3_ID,
+        REPO_1_ID,
+    ]
+    assert all(item["score_source"] == "cosine_fallback" for item in ranked)
+
+
 def test_qdrant_user_profile_not_found_raises_valueerror(
     mock_retrieval_dependencies,
 ):
@@ -463,6 +499,30 @@ def test_generate_recommendations_matches_backend_v2_schema(
     }
     assert all(set(item) == {"repo_id", "score", "source"} for item in response["items"])
     assert all(type(item["score"]) is float for item in response["items"])
+
+
+def test_generate_recommendations_applies_backend_feedback_exclusions(
+    mock_retrieval_dependencies,
+):
+    mock_qdrant, mock_retriever, _ = mock_retrieval_dependencies
+    _configure_user_profile(mock_qdrant)
+    mock_retriever.retrieve_candidates.return_value = _candidate_pool()
+    engine = RetrievalEngine(qdrant_url="http://localhost:6333")
+    engine._ranker = _mock_ranker()
+
+    response = engine.generate_recommendations(
+        schema_version=2,
+        generation_id=GENERATION_ID,
+        user_id=USER_ID,
+        feed_version=12,
+        limit=3,
+        seen_repo_ids={REPO_2_ID},
+    )
+
+    assert [item["repo_id"] for item in response["items"]] == [
+        REPO_3_ID,
+        REPO_1_ID,
+    ]
 
 
 @pytest.mark.parametrize(

@@ -217,7 +217,14 @@ class RetrievalEngine:
         is_cold_start: bool = False,
         seen_repo_ids: set[str] | None = None,
     ) -> dict[str, Any]:
-        """Return the canonical backend-to-ML recommendation v2 response."""
+        """Return the canonical backend-to-ML recommendation v2 response.
+
+        ``seen_repo_ids`` is the backend-owned exact-exclusion snapshot. It
+        should include previously served repositories and durable interaction
+        exclusions such as explicit dislikes or already-consumed saves. The
+        user's Qdrant vector already reflects feedback directionally, so this
+        online path must not query ``FeedbackStore`` and apply it a second time.
+        """
         if schema_version != RECOMMENDATION_SCHEMA_VERSION:
             raise ValueError(
                 f"schema_version must be {RECOMMENDATION_SCHEMA_VERSION}"
@@ -303,6 +310,9 @@ class RetrievalEngine:
     ) -> dict[str, list[dict[str, Any]]]:
         """Generate legacy internal batches used by the existing v1 adapter.
 
+        The caller owns exact exclusions through ``seen_repo_ids``; online ML
+        intentionally performs no PostgreSQL feedback lookup.
+
         Returns
         -------
         dict with keys ``"batch_1"``, ``"batch_2"``, ``"batch_3"``, each a
@@ -359,6 +369,9 @@ class RetrievalEngine:
         # ── 3. Rank and shape the candidate pool ──────────────────────────────
         start_ranking = time.time()
         ranked = self._rank_candidates(user_vector, user_skills, candidates)
+        # Do not re-query FeedbackStore here: feedback is already represented
+        # in the Qdrant user vector, while exact exclusions are supplied by the
+        # backend in seen_repo_ids.
         ranked = FeedAssemblySystem().shape_batch(
             ranked,
             seen_repo_ids=seen_repo_ids,
@@ -709,6 +722,21 @@ class RetrievalEngine:
 
     # ── MMoE Ranking ──────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _cosine_fallback(
+        candidates: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Return copies ordered by their Qdrant retrieval scores."""
+        fallback: list[dict[str, Any]] = []
+        for candidate in candidates:
+            item = dict(candidate)
+            item["final_score"] = float(item.get("retrieval_score") or 0.0)
+            item["predictions"] = {}
+            item["score_source"] = "cosine_fallback"
+            fallback.append(item)
+        fallback.sort(key=lambda item: item["final_score"], reverse=True)
+        return fallback
+
     def _rank_candidates(
         self,
         user_vector: list[float],
@@ -735,15 +763,7 @@ class RetrievalEngine:
                 "RankerService unavailable.  Returning candidates in "
                 "retrieval order (cosine score)."
             )
-            for c in candidates:
-                c["final_score"] = float(c.get("retrieval_score") or 0.0)
-                c["predictions"] = {}
-                c["score_source"] = "cosine_fallback"
-            candidates.sort(
-                key=lambda candidate: candidate["final_score"],
-                reverse=True,
-            )
-            return candidates
+            return self._cosine_fallback(candidates)
 
         user_emb = np.array(user_vector, dtype=np.float32)
 
@@ -815,18 +835,20 @@ class RetrievalEngine:
         # ── Run MMoE on all candidates ────────────────────────────────────────
         try:
             scored = ranker.score_batch(user_emb, user_skills, ranker_inputs)
-            id_to_score: dict[str, dict] = {s["repo_id"]: s for s in scored}
         except Exception as exc:
             logger.error("RankerService.score_batch failed: %s. Falling back to cosine order.", exc)
-            for c in candidates:
-                c["final_score"] = float(c.get("retrieval_score") or 0.0)
-                c["predictions"] = {}
-                c["score_source"] = "cosine_fallback"
-            candidates.sort(
-                key=lambda candidate: candidate["final_score"],
-                reverse=True,
+            return self._cosine_fallback(candidates)
+
+        id_to_score: dict[str, dict] = {s["repo_id"]: s for s in scored}
+        expected_repo_ids = {str(item["id"]) for item in ranker_inputs}
+        if set(id_to_score) != expected_repo_ids:
+            logger.warning(
+                "Ranker returned %d/%d candidate scores; falling back to "
+                "Qdrant retrieval order.",
+                len(id_to_score),
+                len(expected_repo_ids),
             )
-            return candidates
+            return self._cosine_fallback(candidates)
 
         # ── Merge scores back ─────────────────────────────────────────────────
         enriched: list[dict[str, Any]] = []
