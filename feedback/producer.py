@@ -21,13 +21,21 @@ class FeedbackProducer:
         if self.redis_url:
             try:
                 import redis
-                self.redis_client = redis.from_url(self.redis_url, decode_responses=True)
+                self.redis_client = redis.from_url(
+                    self.redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=1,
+                    socket_timeout=1,
+                )
                 # Test connection
                 self.redis_client.ping()
                 logger.info("Connected to Redis at %s for feedback streaming", self.redis_url)
             except Exception as exc:
                 logger.warning("Redis connection failed: %s. Falling back to In-Memory Queue.", exc)
                 self.redis_client = None
+
+        if self.redis_client is None and os.getenv("ML_ENV", "development").lower() == "production":
+            raise RuntimeError("REDIS_URL must point to a reachable Redis service in production")
 
     async def submit_feedback(
         self,

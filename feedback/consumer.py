@@ -25,11 +25,19 @@ class FeedbackConsumer:
         if self.redis_url:
             try:
                 import redis
-                self.redis_client = redis.from_url(self.redis_url, decode_responses=True)
+                self.redis_client = redis.from_url(
+                    self.redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=1,
+                    socket_timeout=1,
+                )
                 self.redis_client.ping()
                 logger.info("Connected to Redis for consuming feedback stream")
             except Exception:
                 self.redis_client = None
+
+        if self.redis_client is None and os.getenv("ML_ENV", "development").lower() == "production":
+            raise RuntimeError("REDIS_URL must point to a reachable Redis service in production")
 
     async def start(self) -> None:
         """Start the consumer loop in the background."""
@@ -43,11 +51,16 @@ class FeedbackConsumer:
             # Run in-memory consumer loop
             self.task = asyncio.create_task(self._in_memory_consume_loop())
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop the consumer loop."""
         self.running = False
         if self.task:
             self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+            self.task = None
 
     async def _in_memory_consume_loop(self) -> None:
         queue = get_in_memory_queue()

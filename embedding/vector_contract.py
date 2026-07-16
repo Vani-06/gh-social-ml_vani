@@ -89,15 +89,13 @@ def canonical_backend_uuid(value: str, *, field_name: str) -> str:
 
 
 def repository_point_id(repo_id: str) -> str:
-    """Return the deterministic Qdrant point ID for a backend repository UUID."""
-    canonical = canonical_backend_uuid(repo_id, field_name="repo_id")
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"github:{canonical}"))
+    """Return the canonical backend repository UUID used as the Qdrant point ID."""
+    return canonical_backend_uuid(repo_id, field_name="repo_id")
 
 
 def user_point_id(user_id: str) -> str:
-    """Return the deterministic Qdrant point ID for a backend user UUID."""
-    canonical = canonical_backend_uuid(user_id, field_name="user_id")
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"user:{canonical}"))
+    """Return the canonical backend user UUID used as the Qdrant point ID."""
+    return canonical_backend_uuid(user_id, field_name="user_id")
 
 
 def resolve_repository_identity(repo: Mapping[str, Any]) -> tuple[str, str]:

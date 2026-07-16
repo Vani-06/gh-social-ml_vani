@@ -39,6 +39,9 @@ class TestSetupLogger:
             # Check that file handler was added
             assert any(isinstance(h, logging.FileHandler) for h in logger.handlers)
         finally:
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)
             os.unlink(log_file)
 
     def test_setup_logger_without_file_output(self):
@@ -156,4 +159,7 @@ class TestLoggerFunctionality:
                 content = f.read()
                 assert "Test message to file" in content
         finally:
+            for handler in logger.handlers[:]:
+                handler.close()
+                logger.removeHandler(handler)
             os.unlink(log_file)

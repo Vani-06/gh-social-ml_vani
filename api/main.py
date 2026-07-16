@@ -141,7 +141,7 @@ async def lifespan(app: FastAPI):
     # Shutdown components
     logger.info("Shutting down API components...")
     if consumer:
-        consumer.stop()
+        await consumer.stop()
     logger.info("API components shut down.")
 
 
@@ -381,3 +381,8 @@ async def health_check():
         "status": "healthy",
         "consumer_running": consumer.running if consumer else False,
     }
+
+
+from api.v2 import router as v2_router
+
+app.include_router(v2_router)

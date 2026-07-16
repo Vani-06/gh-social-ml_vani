@@ -43,10 +43,10 @@ def test_user_collection_contract_preserves_existing_unnamed_vector():
     assert USER_PROFILE_COLLECTION_CONTRACT.model_name == REPOSITORY_EMBEDDING_MODEL
 
 
-def test_point_ids_are_deterministic_and_namespaced():
+def test_point_ids_are_canonical_backend_uuids():
     assert repository_point_id(REPO_ID) == repository_point_id(f" {REPO_ID} ")
     assert user_point_id(REPO_ID) == user_point_id(f" {REPO_ID} ")
-    assert repository_point_id(REPO_ID) != user_point_id(REPO_ID)
+    assert repository_point_id(REPO_ID) == user_point_id(REPO_ID) == REPO_ID
     assert repository_point_id(REPO_ID) != repository_point_id(OTHER_REPO_ID)
 
 
