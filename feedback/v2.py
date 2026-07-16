@@ -15,7 +15,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 
 from config import QDRANT_API_KEY, QDRANT_COLLECTION_NAME, QDRANT_URL, QDRANT_VECTOR_NAME
-from feedback.event_handlers import ADJUSTMENTS_KEY, LATENT_KEY
+from feedback.event_handlers import ADJUSTMENTS_KEY, APPLIED_SIGNALS_KEY, LATENT_KEY
 from feedback.interactions import get_interaction
 from scripts.user_onboarding import TARGET_VECTOR_NAME, USER_PROFILES_COLLECTION
 
@@ -160,6 +160,20 @@ class OrderedFeedbackApplier:
             adjustments[repo_id] = validated_state
         return adjustments
 
+    @staticmethod
+    def _applied_signals(payload: Mapping[str, Any]) -> dict[str, list[str]]:
+        value = payload.get(APPLIED_SIGNALS_KEY, {})
+        if not isinstance(value, Mapping):
+            raise ValueError(f"{APPLIED_SIGNALS_KEY} must be an object")
+        signals: dict[str, list[str]] = {}
+        for repo_id, actions in value.items():
+            if not isinstance(repo_id, str) or not isinstance(actions, list):
+                raise ValueError(f"{APPLIED_SIGNALS_KEY} contains invalid repository state")
+            if any(not isinstance(action, str) or not action for action in actions):
+                raise ValueError(f"{APPLIED_SIGNALS_KEY} contains an invalid action")
+            signals[repo_id] = list(actions)
+        return signals
+
     def apply(self, event: dict[str, Any]) -> ApplyResult:
         user_id = str(uuid.UUID(event["user_id"]))
         repo_id = str(uuid.UUID(event["repo_id"]))
@@ -187,6 +201,7 @@ class OrderedFeedbackApplier:
             payload.get(LATENT_KEY, current), dimension, label="feedback latent vector"
         ).copy()
         adjustments = self._adjustments(payload)
+        applied_signals = self._applied_signals(payload)
         repo_state = adjustments.setdefault(repo_id, {})
         definition = get_interaction(event["event_type"])
 
@@ -225,6 +240,11 @@ class OrderedFeedbackApplier:
                     "delta": delta.tolist(),
                     "event_id": event["event_id"],
                 }
+        elif definition.apply_once:
+            repo_signals = applied_signals.setdefault(repo_id, [])
+            if event["event_type"] not in repo_signals:
+                accumulator += self._alpha(event) * repository_vector()
+                repo_signals.append(event["event_type"])
         else:
             accumulator += self._alpha(event) * repository_vector()
 
@@ -236,6 +256,7 @@ class OrderedFeedbackApplier:
         vector = (accumulator / norm).tolist()
         payload[LATENT_KEY] = accumulator.tolist()
         payload[ADJUSTMENTS_KEY] = adjustments
+        payload[APPLIED_SIGNALS_KEY] = applied_signals
         payload["last_feedback_version"] = version
         payload["last_feedback_event_id"] = event["event_id"]
         stored_vector: Any = vector if user_vector_name is None else {user_vector_name: vector}

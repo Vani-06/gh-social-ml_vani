@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from feedback.event_handlers import ADJUSTMENTS_KEY, LATENT_KEY
+from feedback.event_handlers import ADJUSTMENTS_KEY, APPLIED_SIGNALS_KEY, LATENT_KEY
 from feedback.v2 import OrderedFeedbackApplier
 
 
@@ -86,3 +86,19 @@ def test_reversal_preserves_later_unrelated_feedback():
     expected = np.asarray([1.0, 0.05])
     expected /= np.linalg.norm(expected)
     assert np.allclose(client.user.vector, expected)
+
+
+@pytest.mark.parametrize("passive_action", ["readme_open", "github_open", "share"])
+def test_passive_signal_is_applied_only_once(passive_action):
+    user_id, repo_id = str(uuid.uuid4()), str(uuid.uuid4())
+    client = FakeQdrant(user_id, repo_id)
+    applier = OrderedFeedbackApplier(client)
+
+    applier.apply(event(user_id, repo_id, 1, passive_action))
+    first_vector = np.asarray(client.user.vector)
+    result = applier.apply(event(user_id, repo_id, 2, passive_action))
+
+    assert result.status == "applied"
+    assert np.allclose(client.user.vector, first_vector)
+    assert client.user.payload[APPLIED_SIGNALS_KEY][repo_id] == [passive_action]
+    assert client.user.payload["last_feedback_version"] == 2
