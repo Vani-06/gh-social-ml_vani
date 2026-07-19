@@ -1,0 +1,29 @@
+{
+  "failures": {},
+  "last_run": {
+    "completed_at": "2026-07-18T18:58:55.393832+00:00",
+    "discovered": 0,
+    "duplicates_removed": 0,
+    "enriched": 1,
+    "failures": {},
+    "indexed": 0,
+    "persisted": 0,
+    "rejected": 1,
+    "resumed_indexing": 0,
+    "resumed_persistence": 0,
+    "skipped_existing": 0
+  },
+  "pending_index": [],
+  "pending_persistence": [],
+  "rejected": {
+    "owner/rejected": {
+      "reasons": [
+        "no README",
+        "shell repository"
+      ],
+      "timestamp": "2026-07-18T18:58:55.393690+00:00"
+    }
+  },
+  "updated_at": "2026-07-18T18:58:55.393838+00:00",
+  "version": 1
+}

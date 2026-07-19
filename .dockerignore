@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.git
+.github
+.idea
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.benchmarks
+.cache
+tmp_pytest
+*.log

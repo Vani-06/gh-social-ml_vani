@@ -1,0 +1,31 @@
+{
+  "failures": {
+    "owner/retry": {
+      "error": "temporary timeout",
+      "stage": "readme_enrichment",
+      "timestamp": "2026-07-18T18:58:55.386811+00:00"
+    }
+  },
+  "last_run": {
+    "completed_at": "2026-07-18T18:58:55.387013+00:00",
+    "discovered": 1,
+    "duplicates_removed": 0,
+    "enriched": 0,
+    "failures": {
+      "owner/retry": "readme_enrichment: temporary timeout"
+    },
+    "indexed": 0,
+    "persisted": 0,
+    "rejected": 0,
+    "resumed_indexing": 0,
+    "resumed_persistence": 0,
+    "skipped_existing": 0
+  },
+  "pending_index": [],
+  "pending_persistence": [
+    "owner/retry"
+  ],
+  "rejected": {},
+  "updated_at": "2026-07-18T18:58:55.387021+00:00",
+  "version": 1
+}

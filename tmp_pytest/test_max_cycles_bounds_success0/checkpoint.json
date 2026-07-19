@@ -1,0 +1,21 @@
+{
+  "failures": {},
+  "last_run": {
+    "completed_at": "2026-07-18T18:58:55.418023+00:00",
+    "discovered": 0,
+    "duplicates_removed": 0,
+    "enriched": 2,
+    "failures": {},
+    "indexed": 2,
+    "persisted": 2,
+    "rejected": 0,
+    "resumed_indexing": 0,
+    "resumed_persistence": 0,
+    "skipped_existing": 0
+  },
+  "pending_index": [],
+  "pending_persistence": [],
+  "rejected": {},
+  "updated_at": "2026-07-18T18:58:55.418044+00:00",
+  "version": 1
+}

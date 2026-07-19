@@ -1,12 +1,13 @@
 import uuid
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
 from embedding.vector_contract import legacy_repository_point_id, legacy_user_point_id
 from feedback.event_handlers import ADJUSTMENTS_KEY, APPLIED_SIGNALS_KEY, LATENT_KEY
-from feedback.v2 import OrderedFeedbackApplier
+from feedback.v2 import DurableFeedbackProducer, OrderedFeedbackApplier
 
 
 class FakeQdrant:
@@ -33,6 +34,20 @@ class FakeQdrant:
 def event(user_id, repo_id, version, event_type="like"):
     return {"event_id": str(uuid.uuid4()), "user_id": user_id, "repo_id": repo_id,
             "feedback_version": str(version), "event_type": event_type, "dwell_ms": ""}
+
+
+def test_v2_feedback_health_reports_dedicated_consumer_heartbeat():
+    redis = MagicMock()
+    redis.xinfo_groups.return_value = [
+        {"name": "ml-feedback-v2", "pending": 2, "lag": 3}
+    ]
+    redis.exists.return_value = 1
+
+    health = DurableFeedbackProducer(redis).health()
+
+    assert health["feedback_pending"] == 2
+    assert health["feedback_lag"] == 3
+    assert health["feedback_consumer_active"] is True
 
 
 def test_feedback_applies_version_with_vector_in_one_upsert():

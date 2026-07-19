@@ -302,6 +302,7 @@ async def generate_recommendations(request: RecommendationRequest):
         str(request.user_id),
         request.limit,
         [str(item) for item in request.exclude_repo_ids],
+        str(request.generation_id),
     )
     invalid_scores = any(not math.isfinite(item.score) for item in items)
     if len({item.repo_id for item in items}) != len(items) or invalid_scores:
@@ -364,6 +365,12 @@ async def health():
     try:
         qdrant = await run_in_threadpool(retriever().health)
         redis = await run_in_threadpool(producer().health)
+        consumer_required = os.getenv(
+            "V2_FEEDBACK_CONSUMER_REQUIRED",
+            "true" if os.getenv("APP_ENV", "development").lower() == "production" else "false",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if consumer_required and not redis.get("feedback_consumer_active"):
+            raise RuntimeError("V2 feedback consumer heartbeat is missing")
         return {"status": "healthy", **qdrant, **redis, "database_required": False}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Dependency health check failed: {exc}") from exc

@@ -1,0 +1,17 @@
+{
+  "failures": {
+    "Owner/Repo": {
+      "error": "failed",
+      "stage": "persistence",
+      "timestamp": "2026-07-18T18:58:55.451819+00:00"
+    }
+  },
+  "last_run": {},
+  "pending_index": [],
+  "pending_persistence": [
+    "Owner/Repo"
+  ],
+  "rejected": {},
+  "updated_at": "2026-07-18T18:58:55.451844+00:00",
+  "version": 1
+}

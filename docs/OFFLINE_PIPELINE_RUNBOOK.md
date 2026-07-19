@@ -52,7 +52,8 @@ Validation success does not prove that credentials are accepted or that a remote
 
 ## Corpus acquisition
 
-Run one bounded production cycle:
+Run one bounded production cycle (`ingestion_engine.py` remains a compatibility
+alias for this same command):
 
 ```bash
 uv run python main.py \

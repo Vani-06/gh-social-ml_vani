@@ -1,0 +1,31 @@
+{
+  "failures": {
+    "owner/bad": {
+      "error": "constraint failure",
+      "stage": "persistence",
+      "timestamp": "2026-07-18T18:58:55.375160+00:00"
+    }
+  },
+  "last_run": {
+    "completed_at": "2026-07-18T18:58:55.379862+00:00",
+    "discovered": 2,
+    "duplicates_removed": 0,
+    "enriched": 2,
+    "failures": {
+      "owner/bad": "persistence: constraint failure"
+    },
+    "indexed": 1,
+    "persisted": 1,
+    "rejected": 0,
+    "resumed_indexing": 0,
+    "resumed_persistence": 0,
+    "skipped_existing": 0
+  },
+  "pending_index": [],
+  "pending_persistence": [
+    "owner/bad"
+  ],
+  "rejected": {},
+  "updated_at": "2026-07-18T18:58:55.379881+00:00",
+  "version": 1
+}

@@ -26,6 +26,7 @@ class FeedAssemblySystem:
         ranked: list[dict],
         *,
         seen_repo_ids: set[str] | None = None,
+        randomizer: random.Random | None = None,
     ) -> list[dict]:
         """Shape a ranked pool with freshness, diversity, and exploration."""
         seen_repo_ids = seen_repo_ids or set()
@@ -112,7 +113,7 @@ class FeedAssemblySystem:
             explore_count = min(explore_count, len(shaped))
             split_index = len(shaped) - explore_count
             explore_tier = shaped[split_index:]
-            random.shuffle(explore_tier)
+            (randomizer or random).shuffle(explore_tier)
             shaped = shaped[:split_index] + explore_tier
 
         return shaped

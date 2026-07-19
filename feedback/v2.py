@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 STREAM = "ml:feedback:v2"
 GROUP = "ml-feedback-v2"
+CONSUMER_HEARTBEAT = "ml:feedback:v2:consumer-heartbeat"
+CONSUMER_HEARTBEAT_TTL_SECONDS = 15
 ACCEPT_LUA = """
 if redis.call('set', KEYS[1], '1', 'NX', 'EX', ARGV[1]) then
   return redis.call('xadd', KEYS[2], '*', unpack(ARGV, 2))
@@ -104,7 +106,12 @@ class DurableFeedbackProducer:
             group = next((item for item in groups if item.get("name") == GROUP), {})
         except Exception:
             group = {}
-        return {"redis": "healthy", "feedback_pending": int(group.get("pending", 0)), "feedback_lag": int(group.get("lag", 0) or 0)}
+        return {
+            "redis": "healthy",
+            "feedback_pending": int(group.get("pending", 0)),
+            "feedback_lag": int(group.get("lag", 0) or 0),
+            "feedback_consumer_active": bool(self.redis.exists(CONSUMER_HEARTBEAT)),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,6 +320,11 @@ class OrderedFeedbackConsumer:
             yield from messages
 
     def run_once(self) -> int:
+        self.redis.set(
+            CONSUMER_HEARTBEAT,
+            self.consumer,
+            ex=CONSUMER_HEARTBEAT_TTL_SECONDS,
+        )
         processed = 0
         for message_id, payload in self._messages():
             user_id = payload.get("user_id")
@@ -334,6 +346,11 @@ class OrderedFeedbackConsumer:
                 self.redis.xack(STREAM, GROUP, message_id)
             finally:
                 self.redis.eval(RELEASE_LOCK_LUA, 1, lock, token)
+        self.redis.set(
+            CONSUMER_HEARTBEAT,
+            self.consumer,
+            ex=CONSUMER_HEARTBEAT_TTL_SECONDS,
+        )
         return processed
 
 

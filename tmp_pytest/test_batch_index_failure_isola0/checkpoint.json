@@ -1,0 +1,27 @@
+{
+  "failures": {
+    "owner/retry": {
+      "error": "point unavailable",
+      "stage": "indexing",
+      "timestamp": "2026-07-18T18:58:55.425950+00:00"
+    }
+  },
+  "last_run": {
+    "completed_at": "2026-07-18T18:58:55.432216+00:00",
+    "discovered": 0,
+    "duplicates_removed": 0,
+    "enriched": 0,
+    "failures": {},
+    "indexed": 1,
+    "persisted": 0,
+    "rejected": 0,
+    "resumed_indexing": 1,
+    "resumed_persistence": 0,
+    "skipped_existing": 0
+  },
+  "pending_index": [],
+  "pending_persistence": [],
+  "rejected": {},
+  "updated_at": "2026-07-18T18:58:55.432229+00:00",
+  "version": 1
+}
