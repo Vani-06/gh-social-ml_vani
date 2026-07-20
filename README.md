@@ -141,6 +141,24 @@ New work must follow these boundaries:
 
 The cutover must be deployed together with the gh-social database, backend, and Expo changes. Keep legacy tables read-only during the rollback window and remove them only after feed, authentication, social actions, boards, and ML delivery have been verified.
 
+## Production processes
+
+CI builds one immutable `gh-social-ml` image and runs it under two independent
+systemd units:
+
+```text
+gh-social-ml.service           uvicorn api.main:app
+gh-social-ml-feedback.service  python -m feedback.v2
+```
+
+The API durably accepts V2 feedback into `ml:feedback:v2`; only the dedicated
+feedback process consumes that stream and updates Qdrant in strict
+`feedback_version` order. Production must set `APP_ENV=production`,
+`LEGACY_ML_API_ENABLED=false`, and `V2_FEEDBACK_CONSUMER_REQUIRED=true` in the
+root-owned `/etc/gh-social/ml.env`. V2 health fails when the consumer heartbeat
+is absent. Deployment rolls back from `gh-social-ml:current` to
+`gh-social-ml:previous` if authenticated V2 health fails.
+
 ## Tests
 
 Run the default suite:

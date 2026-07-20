@@ -10,10 +10,11 @@ from dataclasses import asdict
 from functools import lru_cache
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from config import internal_api_header_name
 from embedding.embedding_pipeline import RepositoryEmbeddingPipeline
 from embedding.qdrant_store import QdrantRepositoryStore
 from embedding.vector_contract import repository_point_ids
@@ -29,12 +30,13 @@ EventType = Literal[
 
 
 async def require_internal_secret(
-    x_internal_secret: str | None = Header(default=None, alias="X-Internal-Secret"),
+    request: Request,
 ) -> None:
     expected = os.getenv("INTERNAL_API_SECRET")
     if not expected:
         raise HTTPException(status_code=503, detail="Internal API secret is not configured.")
-    if not x_internal_secret or not hmac.compare_digest(x_internal_secret, expected):
+    supplied = request.headers.get(internal_api_header_name())
+    if not supplied or not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=401, detail="Invalid or missing internal secret.")
 
 
@@ -302,6 +304,7 @@ async def generate_recommendations(request: RecommendationRequest):
         str(request.user_id),
         request.limit,
         [str(item) for item in request.exclude_repo_ids],
+        str(request.generation_id),
     )
     invalid_scores = any(not math.isfinite(item.score) for item in items)
     if len({item.repo_id for item in items}) != len(items) or invalid_scores:
@@ -364,6 +367,12 @@ async def health():
     try:
         qdrant = await run_in_threadpool(retriever().health)
         redis = await run_in_threadpool(producer().health)
+        consumer_required = os.getenv(
+            "V2_FEEDBACK_CONSUMER_REQUIRED",
+            "true" if os.getenv("APP_ENV", "development").lower() == "production" else "false",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if consumer_required and not redis.get("feedback_consumer_active"):
+            raise RuntimeError("V2 feedback consumer heartbeat is missing")
         return {"status": "healthy", **qdrant, **redis, "database_required": False}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Dependency health check failed: {exc}") from exc

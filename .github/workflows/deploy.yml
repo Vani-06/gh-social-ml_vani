@@ -11,30 +11,64 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify ML service
+        run: |
+          python -m pip install uv==0.11.29
+          uv sync --locked --dev
+          uv run pytest -q
+          docker build -t gh-social-ml:${{ github.sha }} .
+          docker save gh-social-ml:${{ github.sha }} | gzip > gh-social-ml.tar.gz
+
+      - name: Upload immutable image and service units
+        uses: appleboy/scp-action@v1.0.0
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_PRIVATE_KEY }}
+          source: "gh-social-ml.tar.gz,deploy/systemd/*.service"
+          target: /tmp/gh-social-ml-deploy
+
       - name: Deploy using SSH
-        uses: appleboy/ssh-action@master
+        uses: appleboy/ssh-action@v1.2.4
         with:
           host: ${{ secrets.AWS_HOST }}
           username: ${{ secrets.AWS_USER }}
           key: ${{ secrets.AWS_PRIVATE_KEY }}
           script: |
-            cd /home/ubuntu/gh-social-ml
-            git pull --ff-only
-            export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-            if ! command -v uv >/dev/null 2>&1; then
-              UV_VERSION="0.11.29"
-              UV_INSTALLER_SHA256="504a79fd2ed0dcd47e7f04f0792cfd0871f62e24a7fe40fa8ae0f563a369f2bd"
-              UV_INSTALLER="$(mktemp)"
-              trap 'rm -f "$UV_INSTALLER"' EXIT
-              curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-                "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-installer.sh" \
-                --output "$UV_INSTALLER"
-              echo "${UV_INSTALLER_SHA256}  ${UV_INSTALLER}" | sha256sum --check --strict
-              UV_NO_MODIFY_PATH=1 sh "$UV_INSTALLER"
-              rm -f "$UV_INSTALLER"
-              trap - EXIT
-              export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+            set -e
+            test -f /etc/gh-social/ml.env
+            if sudo docker image inspect gh-social-ml:current >/dev/null 2>&1; then
+              sudo docker tag gh-social-ml:current gh-social-ml:previous
             fi
-            UV_PROJECT_ENVIRONMENT=venv uv sync --locked --no-dev
+            sudo docker load -i /tmp/gh-social-ml-deploy/gh-social-ml.tar.gz
+            sudo docker tag gh-social-ml:${{ github.sha }} gh-social-ml:current
+            sudo cp /tmp/gh-social-ml-deploy/deploy/systemd/gh-social-ml.service /etc/systemd/system/gh-social-ml.service
+            sudo cp /tmp/gh-social-ml-deploy/deploy/systemd/gh-social-ml-feedback.service /etc/systemd/system/gh-social-ml-feedback.service
             sudo systemctl daemon-reload
+            sudo systemctl enable gh-social-ml
+            sudo systemctl enable gh-social-ml-feedback
+            sudo systemctl restart gh-social-ml-feedback
             sudo systemctl restart gh-social-ml
+            healthy=false
+            for attempt in $(seq 1 24); do
+              if sudo docker exec gh-social-ml python -c "import os, requests; response=requests.get('http://127.0.0.1:8000/api/v2/health', headers={'x-internal-secret': os.environ['INTERNAL_API_SECRET']}, timeout=15); response.raise_for_status()"; then
+                healthy=true
+                break
+              fi
+              sleep 5
+            done
+            if ! $healthy; then
+              if sudo docker image inspect gh-social-ml:previous >/dev/null 2>&1; then
+                sudo docker tag gh-social-ml:previous gh-social-ml:current
+                sudo systemctl restart gh-social-ml-feedback gh-social-ml
+              fi
+              exit 1
+            fi

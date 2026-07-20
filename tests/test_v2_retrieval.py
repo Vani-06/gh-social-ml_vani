@@ -1,9 +1,11 @@
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from embedding.vector_contract import legacy_repository_point_id, legacy_user_point_id
+from inference.feed_assembly import FeedAssemblySystem
 from retrieval.v2_retriever import QdrantV2Retriever
 
 
@@ -80,3 +82,35 @@ def test_discovery_score_treats_zero_pushed_days_as_fresh():
     assert today_score == pytest.approx(0.1)
     assert missing_source == "popular"
     assert missing_score < today_score
+
+
+def test_v2_retrieval_applies_diversity_freshness_and_deterministic_exploration():
+    client = FakeQdrant()
+    client.repo_ids = [str(uuid.uuid4()) for _ in range(8)]
+    points = []
+    for index, repo_id in enumerate(client.repo_ids):
+        points.append(
+            SimpleNamespace(
+                id=repo_id,
+                payload={
+                    "repo_id": repo_id,
+                    "star_count": 100 - index,
+                    "primary_language": "Python" if index < 6 else "Rust",
+                    "created_at": datetime.now(timezone.utc).isoformat() if index == 7 else None,
+                },
+            )
+        )
+    client.retrieve = lambda **_kwargs: []
+    client.scroll = lambda **_kwargs: (points, None)
+
+    retriever = QdrantV2Retriever(
+        client=client,
+        assembler=FeedAssemblySystem(max_same_language=2),
+    )
+    first = retriever.recommend(client.user_id, 8, [], "fixed-generation")
+    second = retriever.recommend(client.user_id, 8, [], "fixed-generation")
+
+    assert first == second
+    assert {item.repo_id for item in first} == set(client.repo_ids)
+    assert first.index(next(item for item in first if item.repo_id == client.repo_ids[6])) < 6
+    assert first[0].repo_id == client.repo_ids[7]

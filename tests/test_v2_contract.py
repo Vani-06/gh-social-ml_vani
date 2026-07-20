@@ -64,6 +64,31 @@ def test_v2_health_requires_internal_auth(monkeypatch):
     assert response.status_code == 503
 
 
+def test_v2_auth_uses_configured_internal_header(monkeypatch):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    monkeypatch.setenv("INTERNAL_API_SECRET", "test-internal-secret")
+    monkeypatch.setenv("INTERNAL_API_HEADER", "x-ml-service-secret")
+    healthy = SimpleNamespace(health=lambda: {"qdrant": "healthy"})
+    producer = SimpleNamespace(health=lambda: {
+        "redis": "healthy",
+        "feedback_consumer_active": True,
+    })
+
+    with patch("api.v2.retriever", return_value=healthy), patch(
+        "api.v2.producer", return_value=producer
+    ):
+        assert client.get(
+            "/api/v2/health",
+            headers={"x-internal-secret": "test-internal-secret"},
+        ).status_code == 401
+        assert client.get(
+            "/api/v2/health",
+            headers={"x-ml-service-secret": "test-internal-secret"},
+        ).status_code == 200
+
+
 def test_repository_jobs_are_idempotent_and_monotonic():
     job_id = str(uuid.uuid4())
     points = [

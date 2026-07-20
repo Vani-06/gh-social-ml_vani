@@ -15,6 +15,7 @@ dependencies = [
     "requests",
     "schedule",
     "sentence-transformers",
+    "torch",
     "uvicorn>=0.28.0",
 ]
 
@@ -29,3 +30,11 @@ dev = [
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

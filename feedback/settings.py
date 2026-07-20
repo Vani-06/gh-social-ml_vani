@@ -94,9 +94,14 @@ class FeedbackSettings:
             raise ValueError("FEEDBACK_DWELL_MAX_ALPHA must be in (0, 0.15]")
 
         vector_name = os.getenv("USER_PROFILE_VECTOR_NAME") or os.getenv("TARGET_VECTOR_NAME")
+        redis_url = os.getenv("REDIS_URL") or (
+            "redis://localhost:6379/0"
+            if environment not in {"production", "prod"}
+            else None
+        )
         return cls(
             environment=environment,
-            redis_url=os.getenv("REDIS_URL") or None,
+            redis_url=redis_url,
             allow_memory_fallback=allow_memory,
             stream_name=os.getenv("FEEDBACK_STREAM_NAME", "feedback_stream"),
             stream_maxlen=_int("FEEDBACK_STREAM_MAXLEN", 100_000),

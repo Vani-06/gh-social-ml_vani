@@ -7,6 +7,12 @@ from typing import List, Dict, Any
 logger = logging.getLogger(__name__)
 
 
+def _utc_hour(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+
+
 class FeedAssemblySystem:
     def __init__(
         self,
@@ -26,6 +32,8 @@ class FeedAssemblySystem:
         ranked: list[dict],
         *,
         seen_repo_ids: set[str] | None = None,
+        randomizer: random.Random | None = None,
+        reference_time: datetime | None = None,
     ) -> list[dict]:
         """Shape a ranked pool with freshness, diversity, and exploration."""
         seen_repo_ids = seen_repo_ids or set()
@@ -35,7 +43,9 @@ class FeedAssemblySystem:
             if item.get("repo_id") not in seen_repo_ids
         ]
 
-        current_time = datetime.now(timezone.utc)
+        # Hour buckets make generation retries deterministic while preserving
+        # the intended time decay for repositories in the 48-hour window.
+        current_time = _utc_hour(reference_time or datetime.now(timezone.utc))
         for item in shaped:
             base_score = item.get("final_score")
             if base_score is None:
@@ -58,8 +68,7 @@ class FeedAssemblySystem:
                 else:
                     continue
 
-                if created_date.tzinfo is None:
-                    created_date = created_date.replace(tzinfo=timezone.utc)
+                created_date = _utc_hour(created_date)
 
                 if created_date <= current_time:
                     age_hours = max(
@@ -112,7 +121,7 @@ class FeedAssemblySystem:
             explore_count = min(explore_count, len(shaped))
             split_index = len(shaped) - explore_count
             explore_tier = shaped[split_index:]
-            random.shuffle(explore_tier)
+            (randomizer or random).shuffle(explore_tier)
             shaped = shaped[:split_index] + explore_tier
 
         return shaped

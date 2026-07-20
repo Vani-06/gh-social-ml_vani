@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import socket
+import threading
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass
@@ -29,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 STREAM = "ml:feedback:v2"
 GROUP = "ml-feedback-v2"
+CONSUMER_HEARTBEAT = "ml:feedback:v2:consumer-heartbeat"
+CONSUMER_HEARTBEAT_TTL_SECONDS = 15
 ACCEPT_LUA = """
 if redis.call('set', KEYS[1], '1', 'NX', 'EX', ARGV[1]) then
   return redis.call('xadd', KEYS[2], '*', unpack(ARGV, 2))
@@ -104,7 +107,12 @@ class DurableFeedbackProducer:
             group = next((item for item in groups if item.get("name") == GROUP), {})
         except Exception:
             group = {}
-        return {"redis": "healthy", "feedback_pending": int(group.get("pending", 0)), "feedback_lag": int(group.get("lag", 0) or 0)}
+        return {
+            "redis": "healthy",
+            "feedback_pending": int(group.get("pending", 0)),
+            "feedback_lag": int(group.get("lag", 0) or 0),
+            "feedback_consumer_active": bool(self.redis.exists(CONSUMER_HEARTBEAT)),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,29 +320,58 @@ class OrderedFeedbackConsumer:
         for _, messages in self.redis.xreadgroup(GROUP, self.consumer, {STREAM: ">"}, count=20, block=1_000):
             yield from messages
 
-    def run_once(self) -> int:
-        processed = 0
-        for message_id, payload in self._messages():
-            user_id = payload.get("user_id")
-            if not user_id:
-                self.redis.xack(STREAM, GROUP, message_id)
-                continue
-            token = str(uuid.uuid4())
-            lock = f"ml:feedback:v2:user-lock:{user_id}"
-            if not self.redis.set(lock, token, nx=True, px=30_000):
-                continue
+    def _refresh_heartbeat(self) -> None:
+        self.redis.set(
+            CONSUMER_HEARTBEAT,
+            self.consumer,
+            ex=CONSUMER_HEARTBEAT_TTL_SECONDS,
+        )
+
+    def _heartbeat_loop(self, stop: threading.Event) -> None:
+        interval = max(0.1, CONSUMER_HEARTBEAT_TTL_SECONDS / 3)
+        while not stop.wait(interval):
             try:
-                result = self.applier.apply(payload)
-                if result.status != "gap":
+                self._refresh_heartbeat()
+            except Exception as exc:
+                logger.warning("feedback consumer heartbeat refresh failed: %s", exc)
+
+    def run_once(self) -> int:
+        self._refresh_heartbeat()
+        heartbeat_stop = threading.Event()
+        heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            args=(heartbeat_stop,),
+            name="feedback-v2-heartbeat",
+            daemon=True,
+        )
+        heartbeat_thread.start()
+        try:
+            processed = 0
+            for message_id, payload in self._messages():
+                user_id = payload.get("user_id")
+                if not user_id:
                     self.redis.xack(STREAM, GROUP, message_id)
-                    processed += 1
-            except (ValueError, KeyError, LookupError) as exc:
-                logger.error("feedback %s rejected: %s", message_id, exc)
-                self.redis.xadd(f"{STREAM}:dead", {**payload, "error": str(exc)})
-                self.redis.xack(STREAM, GROUP, message_id)
-            finally:
-                self.redis.eval(RELEASE_LOCK_LUA, 1, lock, token)
-        return processed
+                    continue
+                token = str(uuid.uuid4())
+                lock = f"ml:feedback:v2:user-lock:{user_id}"
+                if not self.redis.set(lock, token, nx=True, px=30_000):
+                    continue
+                try:
+                    result = self.applier.apply(payload)
+                    if result.status != "gap":
+                        self.redis.xack(STREAM, GROUP, message_id)
+                        processed += 1
+                except (ValueError, KeyError, LookupError) as exc:
+                    logger.error("feedback %s rejected: %s", message_id, exc)
+                    self.redis.xadd(f"{STREAM}:dead", {**payload, "error": str(exc)})
+                    self.redis.xack(STREAM, GROUP, message_id)
+                finally:
+                    self.redis.eval(RELEASE_LOCK_LUA, 1, lock, token)
+            return processed
+        finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=1)
+            self._refresh_heartbeat()
 
 
 if __name__ == "__main__":

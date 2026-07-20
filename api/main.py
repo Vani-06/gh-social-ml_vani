@@ -13,17 +13,21 @@ import os
 from typing import Any, Literal
 from uuid import UUID
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 
+from config import internal_api_header_name
 from feedback.consumer import FeedbackConsumer
 from feedback.event_handlers import FeedbackHandler
 from feedback.interactions import INTERACTIONS, get_interaction, normalize_interaction
 from feedback.producer import FeedbackProducer, create_redis_client
 from feedback.settings import FeedbackSettings
+
+load_dotenv()
 
 logger = logging.getLogger("pipeline.api")
 
@@ -33,6 +37,13 @@ feedback_handler: FeedbackHandler | None = None
 retrieval_engine: Any | None = None
 onboarding_pipeline: Any | None = None
 repo_embedding_pipeline: Any | None = None
+
+
+def legacy_api_enabled() -> bool:
+    default = "false" if os.getenv("APP_ENV", "development").lower() == "production" else "true"
+    return os.getenv("LEGACY_ML_API_ENABLED", default).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 class FeedbackRequest(BaseModel):
@@ -102,6 +113,10 @@ async def lifespan(app: FastAPI):
     settings = FeedbackSettings.from_env()
     if settings.production and not os.getenv("INTERNAL_API_SECRET"):
         raise RuntimeError("INTERNAL_API_SECRET is required in production")
+    if not legacy_api_enabled():
+        app.state.feedback_settings = settings
+        yield
+        return
     producer, consumer, feedback_handler = _build_feedback_runtime(settings)
     await producer.start()
     await asyncio.to_thread(feedback_handler.healthy)
@@ -136,6 +151,8 @@ app = FastAPI(
 @app.middleware("http")
 async def authenticate_non_health_routes(request: Request, call_next):
     """Fail closed for every route except the single health endpoint."""
+    if request.url.path.startswith("/api/v1/") and not legacy_api_enabled():
+        return JSONResponse(status_code=404, content={"detail": "Legacy ML API is disabled."})
     if request.url.path == "/api/v1/health":
         return await call_next(request)
     secret = os.getenv("INTERNAL_API_SECRET")
@@ -144,8 +161,7 @@ async def authenticate_non_health_routes(request: Request, call_next):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"detail": "Internal API authentication is not configured."},
         )
-    header_name = os.getenv("INTERNAL_API_HEADER", "x-internal-secret").lower()
-    supplied = request.headers.get(header_name)
+    supplied = request.headers.get(internal_api_header_name())
     if not supplied or not hmac.compare_digest(supplied, secret):
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,

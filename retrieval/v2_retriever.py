@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import random
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from qdrant_client import QdrantClient
 
 from config import QDRANT_API_KEY, QDRANT_COLLECTION_NAME, QDRANT_URL, QDRANT_VECTOR_NAME
 from embedding.vector_contract import legacy_repository_point_id, user_point_ids
+from inference.feed_assembly import FeedAssemblySystem
 from scripts.user_onboarding import TARGET_VECTOR_NAME, USER_PROFILES_COLLECTION
 
 
@@ -31,6 +33,7 @@ class QdrantV2Retriever:
         repository_collection: str = QDRANT_COLLECTION_NAME,
         user_collection: str = USER_PROFILES_COLLECTION,
         max_candidates: int = 500,
+        assembler: FeedAssemblySystem | None = None,
     ) -> None:
         self.client = client or QdrantClient(
             url=QDRANT_URL,
@@ -40,6 +43,7 @@ class QdrantV2Retriever:
         self.repository_collection = repository_collection
         self.user_collection = user_collection
         self.max_candidates = max(50, min(max_candidates, 2_000))
+        self.assembler = assembler or FeedAssemblySystem()
         self.model_version = os.getenv("ML_MODEL_VERSION", "qdrant-hybrid-v2")
         self.embedding_version = os.getenv("REPOSITORY_EMBEDDING_VERSION", "repo-embedding-v2")
 
@@ -120,28 +124,70 @@ class QdrantV2Retriever:
         source = "trending" if velocity > 0 else "fresh" if pushed_days <= 30 else "popular"
         return score, source
 
-    def recommend(self, user_id: str, limit: int, exclude_repo_ids: list[str]) -> list[RankedRepository]:
+    def recommend(
+        self,
+        user_id: str,
+        limit: int,
+        exclude_repo_ids: list[str],
+        generation_seed: str | None = None,
+    ) -> list[RankedRepository]:
         excluded = {str(uuid.UUID(item)) for item in exclude_repo_ids}
         candidates: dict[str, RankedRepository] = {}
+        metadata: dict[str, dict[str, Any]] = {}
         user_vector = self._user_vector(user_id)
         if user_vector:
             for point, score in self._semantic(user_vector, max(limit * 5, 100)):
                 repo_id = self._canonical_id(point)
                 if repo_id and repo_id not in excluded and math.isfinite(score):
                     candidates[repo_id] = RankedRepository(repo_id, score, "semantic")
+                    metadata[repo_id] = dict(point.payload or {})
 
+        discovery: list[tuple[str, float, str, dict[str, Any]]] = []
         for point in self._discovery(max(limit * 8, 200)):
             repo_id = self._canonical_id(point)
             if not repo_id or repo_id in excluded:
                 continue
-            score, source = self._discovery_score(point.payload or {})
+            payload = dict(point.payload or {})
+            score, source = self._discovery_score(payload)
+            if math.isfinite(score):
+                discovery.append((repo_id, score, source, payload))
+
+        maximum_discovery = max((item[1] for item in discovery), default=0.0)
+        for repo_id, score, source, payload in discovery:
+            normalized_discovery = score / maximum_discovery if maximum_discovery > 0 else 0.0
             current = candidates.get(repo_id)
-            combined = score if current is None else current.score + 0.15 * score
+            combined = 0.15 * normalized_discovery
+            if current is not None:
+                combined += current.score
             if math.isfinite(combined):
                 candidates[repo_id] = RankedRepository(repo_id, combined, current.source if current else source)
+                metadata[repo_id] = payload
 
         ranked = sorted(candidates.values(), key=lambda item: (-item.score, item.repo_id))
-        return ranked[:limit]
+        assembly_input = [
+            {
+                "repo_id": item.repo_id,
+                "score": item.score,
+                "final_score": item.score,
+                "source": item.source,
+                "primary_language": metadata.get(item.repo_id, {}).get("primary_language"),
+                "created_at": metadata.get(item.repo_id, {}).get("created_at"),
+            }
+            for item in ranked
+        ]
+        shaped = self.assembler.shape_batch(
+            assembly_input,
+            seen_repo_ids=excluded,
+            randomizer=random.Random(generation_seed),
+        )
+        return [
+            RankedRepository(
+                repo_id=str(item["repo_id"]),
+                score=round(float(item["final_score"]), 6),
+                source=str(item["source"]),
+            )
+            for item in shaped[:limit]
+        ]
 
     def health(self) -> dict[str, Any]:
         info = self.client.get_collection(self.repository_collection)

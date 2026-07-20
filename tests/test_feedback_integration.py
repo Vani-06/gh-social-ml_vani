@@ -11,6 +11,7 @@ import uuid
 import pytest
 from qdrant_client import QdrantClient, models
 
+from embedding.vector_contract import repository_point_id, user_point_id
 from feedback.consumer import FeedbackConsumer
 from feedback.event_handlers import FeedbackHandler, PROCESSED_KEY
 from feedback.producer import FeedbackProducer, create_redis_client
@@ -88,16 +89,16 @@ async def test_feedback_event_round_trip_through_real_redis_and_qdrant(anyio_bac
         created_collections.append(settings.repository_collection)
 
         user_id = str(uuid.uuid4())
-        repo_id = f"integration/{suffix}"
-        user_point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"user:{user_id}"))
-        repo_point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"github:{repo_id}"))
+        repo_id = str(uuid.uuid4())
+        user_point_id_value = user_point_id(user_id)
+        repo_point_id_value = repository_point_id(repo_id)
         user_vector = [1.0, 0.0] + [0.0] * (settings.vector_dimension - 2)
         repo_vector = [0.0, 1.0] + [0.0] * (settings.vector_dimension - 2)
         qdrant.upsert(
             collection_name=settings.user_collection,
             points=[
                 models.PointStruct(
-                    id=user_point_id,
+                    id=user_point_id_value,
                     vector=user_vector,
                     payload={"user_id": user_id},
                 )
@@ -108,7 +109,7 @@ async def test_feedback_event_round_trip_through_real_redis_and_qdrant(anyio_bac
             collection_name=settings.repository_collection,
             points=[
                 models.PointStruct(
-                    id=repo_point_id,
+                    id=repo_point_id_value,
                     vector={settings.repository_vector_name: repo_vector},
                     payload={"repo_id": repo_id},
                 )
@@ -148,7 +149,7 @@ async def test_feedback_event_round_trip_through_real_redis_and_qdrant(anyio_bac
         assert redis_client.exists(f"feedback:processed:{event_id}") == 1
         updated = qdrant.retrieve(
             collection_name=settings.user_collection,
-            ids=[user_point_id],
+            ids=[user_point_id_value],
             with_payload=True,
             with_vectors=True,
         )

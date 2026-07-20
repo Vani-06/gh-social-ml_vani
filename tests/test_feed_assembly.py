@@ -105,6 +105,26 @@ class TestFeedAssemblySystem:
         assert result[0]["repo_id"] == "repo-fresh"
         assert result[0]["final_score"] > result[1]["final_score"]
 
+    def test_shape_batch_freshness_score_is_stable_within_scoring_hour(self):
+        created_at = datetime(2026, 7, 19, 10, 35, tzinfo=timezone.utc)
+        ranked = [{
+            "repo_id": "repo-fresh",
+            "final_score": 0.4,
+            "created_at": created_at,
+        }]
+        assembler = FeedAssemblySystem()
+
+        first = assembler.shape_batch(
+            ranked,
+            reference_time=datetime(2026, 7, 19, 12, 1, tzinfo=timezone.utc),
+        )
+        second = assembler.shape_batch(
+            ranked,
+            reference_time=datetime(2026, 7, 19, 12, 59, tzinfo=timezone.utc),
+        )
+
+        assert first == second
+
     def test_shape_batch_exploration_shuffles_tail(self):
         now = datetime.now(timezone.utc)
         ranked = [

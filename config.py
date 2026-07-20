@@ -1,6 +1,11 @@
 import os
 
 
+def internal_api_header_name() -> str:
+    """Return the normalized service-auth header shared by every API layer."""
+    return os.getenv("INTERNAL_API_HEADER", "x-internal-secret").strip().lower() or "x-internal-secret"
+
+
 def _positive_int_env(name: str, default: int) -> int:
     raw_value = os.getenv(name)
     if raw_value is None:

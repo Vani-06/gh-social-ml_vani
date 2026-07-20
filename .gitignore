@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+tmp_pytest/
 .DS_Store
 .env
 .coverage
@@ -14,8 +15,7 @@ venv/
 custom_test_users.json
 verify_app.ps1
 
-# Docker and deployment configurations (kept local-only)
-Dockerfile
+# Local-only deployment configurations
 docker-compose.prod.yml
 dvc.yaml
 monitoring/
