@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from secrets import token_hex
 import socket
 
 from scripts.validate_production_config import (
@@ -21,7 +22,7 @@ def valid_production_env() -> dict[str, str]:
         "LEGACY_ML_API_ENABLED": "false",
         "V2_FEEDBACK_CONSUMER_REQUIRED": "true",
         "INTERNAL_API_HEADER": "x-internal-secret",
-        "INTERNAL_API_SECRET": "9f2a7c4e1b8d6a3f0c5e7b2d9a4f6c1e" * 2,
+        "INTERNAL_API_SECRET": token_hex(32),
         "REDIS_AUTH_MODE": "acl_url",
         "REDIS_URL": "rediss://ml-runtime:strong-test-password@redis.internal:6379/0",
         "FEEDBACK_ALLOW_MEMORY_FALLBACK": "false",

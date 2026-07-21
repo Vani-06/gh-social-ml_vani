@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from secrets import token_hex
 from uuid import UUID
 
 import pytest
@@ -27,7 +28,7 @@ class _Response:
 
 def smoke_environment() -> dict[str, str]:
     return {
-        "INTERNAL_API_SECRET": "9f2a7c4e1b8d6a3f0c5e7b2d9a4f6c1e" * 2,
+        "INTERNAL_API_SECRET": token_hex(32),
         "EMBEDDING_MODEL": "sentence-transformers/all-MiniLM-L6-v2",
         "EMBEDDING_MODEL_REVISION": "c9745ed1d9f207416be6d2e6f8de32d1f16199bf",
         "REPOSITORY_EMBEDDING_VERSION": "repo-embedding-v2",
